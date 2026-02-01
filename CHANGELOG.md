@@ -20,5 +20,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for standard, JK, and ALI device UUIDs.
 - PyPI-ready packaging with `pyproject.toml` and uv.
 
-[Unreleased]: https://github.com/your-username/petnetizen-feeder/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/your-username/petnetizen-feeder/releases/tag/v0.1.0
+[Unreleased]: https://github.com/lorek123/petnetizen-feeder/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/lorek123/petnetizen-feeder/releases/tag/v0.1.0
