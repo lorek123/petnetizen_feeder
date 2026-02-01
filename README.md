@@ -1,6 +1,6 @@
 # Petnetizen Feeder BLE Library
 
-A Python library for controlling Petnetizen automatic pet feeders via Bluetooth Low Energy.
+A Python BLE library for controlling Petnetizen automatic pet feeders. Suitable for use with **uv** and as a dependency for **Home Assistant** custom integrations.
 
 ## Features
 
@@ -12,13 +12,28 @@ A Python library for controlling Petnetizen automatic pet feeders via Bluetooth 
 
 ## Installation
 
+**From PyPI** (after [publishing](https://pypi.org/project/petnetizen-feeder/)):
+
+```bash
+pip install petnetizen-feeder
+# or
+uv add petnetizen-feeder
+```
+
+**From source** (project root):
+
 ```bash
 # Using uv (recommended)
 uv sync
-
-# Or using pip
-pip install bleak
 ```
+
+This creates a virtual environment (`.venv`), installs the package in editable mode, and pins dependencies (e.g. `bleak`). Then run scripts with:
+
+```bash
+uv run python your_script.py
+```
+
+To install elsewhere (e.g. for a Home Assistant integration), use `pip install -e .` in the project root or publish to PyPI and add `petnetizen-feeder` to your integration’s dependencies.
 
 ## Quick Start
 
@@ -193,7 +208,7 @@ Based on reverse engineering of the official Petnetizen Android app.
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.12+ (aligned with current Home Assistant; see [HA version support](https://www.home-assistant.io/installation/))
 - `bleak` library for BLE communication
 - Linux: Bluetooth permissions (user in `bluetooth` group)
 - macOS: Bluetooth access permissions
@@ -219,6 +234,34 @@ sudo usermod -aG bluetooth $USER
 # Then log out and back in
 ```
 
+## Development
+
+From the project root:
+
+```bash
+uv sync --all-extras   # install with dev dependencies
+uv run pytest tests/ -v
+uv build               # build sdist + wheel in dist/
+```
+
+## Releasing (PyPI + GitHub)
+
+1. **One-time setup**
+   - In **pyproject.toml** and **CHANGELOG.md**, replace `your-username` with your GitHub username (or org) so URLs point to your repo.
+   - On [PyPI](https://pypi.org), create an API token (Account → API tokens).
+   - In your GitHub repo: **Settings → Secrets and variables → Actions** → add secret `PYPI_API_TOKEN` with the PyPI token.
+
+2. **Cut a release**
+   - Bump `version` in **pyproject.toml** and add an entry in **CHANGELOG.md** under `[Unreleased]` / new version.
+   - Commit, push, then create and push a tag:
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+   - The **Release** workflow runs: builds the package, publishes to PyPI, and creates a GitHub Release with generated notes and `dist/` artifacts.
+
+CI runs on every push/PR to `main` (or `master`) and tests Python 3.12–3.14 (aligned with current Home Assistant).
+
 ## License
 
-This library is based on reverse engineering of the Petnetizen Android app for educational and personal use.
+This library is based on reverse engineering of the Petnetizen Android app for educational and personal use. See [LICENSE](LICENSE).

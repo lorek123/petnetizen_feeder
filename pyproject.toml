@@ -1,0 +1,46 @@
+[project]
+name = "petnetizen-feeder"
+version = "0.1.0"
+description = "Python BLE library for Petnetizen automatic pet feeders (Home Assistant–friendly)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = []
+keywords = ["ble", "bluetooth", "pet-feeder", "home-assistant", "tuya", "petnetizen"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Home Automation",
+]
+dependencies = [
+    "bleak>=2.1.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-username/petnetizen-feeder"
+Documentation = "https://github.com/your-username/petnetizen-feeder#readme"
+Repository = "https://github.com/your-username/petnetizen-feeder"
+Changelog = "https://github.com/your-username/petnetizen-feeder/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/your-username/petnetizen-feeder/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["petnetizen_feeder"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

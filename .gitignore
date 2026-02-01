@@ -1,0 +1,43 @@
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Build / install
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# uv
+.uv/
+uv.lock
+
+# Tests / coverage / quality
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.cover
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local / secrets
+*.local
+.env.*
+!.env.example

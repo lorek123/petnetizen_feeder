@@ -5,12 +5,9 @@ This module handles the Tuya BLE protocol encoding/decoding and device communica
 """
 
 import asyncio
-import json
-import os
 from typing import Optional, Dict
-from bleak import BleakClient, BleakScanner
+from bleak import BleakClient
 from bleak.backends.characteristic import BleakGATTCharacteristic
-from bleak.backends.device import BLEDevice
 
 # BLE UUIDs for different device types
 FEEDER_SERVICE_UUID = "0000ae30-0000-1000-8000-00805f9b34fb"
@@ -54,7 +51,7 @@ def detect_device_type(device_name: Optional[str] = None) -> str:
     """Detect device type from name"""
     if not device_name:
         return "standard"
-    
+
     name_upper = device_name.upper()
     if "JK" in name_upper:
         return "jk"
@@ -65,11 +62,11 @@ def detect_device_type(device_name: Optional[str] = None) -> str:
 
 class FeederBLEProtocol:
     """Low-level BLE protocol handler for feeder devices"""
-    
+
     def __init__(self, device_address: str, device_type: Optional[str] = None):
         self.device_address = device_address
         self.device_type = device_type or detect_device_type()
-        
+
         # Select UUIDs based on device type
         if self.device_type == "jk":
             self.service_uuid = JK_FEEDER_SERVICE_UUID
@@ -83,65 +80,65 @@ class FeederBLEProtocol:
             self.service_uuid = FEEDER_SERVICE_UUID
             self.write_uuid = FEEDER_WRITE_UUID
             self.notify_uuid = FEEDER_NOTIFY_UUID
-        
+
         self.client: Optional[BleakClient] = None
         self.received_data = []
         self.write_characteristic = None
         self.notify_characteristic = None
         self.supports_write_response = False
         self.supports_write_no_response = True
-    
+
     def hex_string_to_bytes(self, hex_string: str) -> bytes:
         """Convert hex string to bytes"""
         return bytes.fromhex(hex_string.replace(" ", "").replace("-", ""))
-    
+
     def bytes_to_hex_string(self, data: bytes) -> str:
         """Convert bytes to hex string"""
         return data.hex().upper()
-    
-    def encode_command(self, command: str, length: Optional[int] = None, 
+
+    def encode_command(self, command: str, length: Optional[int] = None,
                       action_hex: str = "") -> bytes:
         """
         Encode a command according to Tuya BLE protocol.
-        
+
         Format: EA + Command + Length + Data + CRC(00) + AE
         """
         if length is None:
             length = len(action_hex) // 2
-        
+
         command_int = int(command, 16)
         command_bytes = bytearray()
         command_bytes.append(0xEA)  # Header
         command_bytes.append(command_int)  # Command byte
         command_bytes.append(length)  # Length byte
-        
+
         if action_hex:
             data_bytes = self.hex_string_to_bytes(action_hex)
             command_bytes.extend(data_bytes)
-        
+
         command_bytes.append(0x00)  # CRC placeholder
         command_bytes.append(0xAE)  # Footer
-        
+
         return bytes(command_bytes)
-    
+
     def decode_notification(self, data: bytearray) -> dict:
         """Decode notification data"""
         if len(data) < 4:
             return {"error": "Data too short"}
-        
+
         result = {
             "raw": self.bytes_to_hex_string(data),
             "raw_bytes": data
         }
-        
+
         try:
             header = data[0]
             command_byte = data[1]
             command_hex = f"{command_byte:02X}"
-            
+
             result["header"] = f"{header:02X}"
             result["command"] = command_hex
-            
+
             command_map = {
                 "00": "NAME_AND_VERSION", "01": "SET_NAME", "02": "RESTORE_FACTORY",
                 "03": "HEARTBEAT", "04": "QUERY_MAC", "05": "SYNC_TIME",
@@ -152,21 +149,21 @@ class FeederBLEProtocol:
                 "12": "REMINDER_TONE", "13": "ATMOSPHERE_LIGHT",
             }
             result["command_name"] = command_map.get(command_hex, "UNKNOWN")
-            
+
             if len(data) >= 6:
                 footer = data[-1]
                 result["footer"] = f"{footer:02X}"
                 length_byte = data[2]
                 result["length"] = length_byte
-                
+
                 crc_byte = data[-2] if len(data) > 2 else None
                 if crc_byte is not None:
                     result["crc"] = f"{crc_byte:02X}"
-                
+
                 data_section = data[3:-2] if len(data) > 5 else data[3:-1]
                 result["data_hex"] = self.bytes_to_hex_string(data_section)
                 result["data_bytes"] = bytes(data_section)
-                
+
                 # Parse specific commands
                 if command_hex == "00" and len(data_section) >= 12:
                     try:
@@ -177,7 +174,7 @@ class FeederBLEProtocol:
                             version = data_section[12:].decode('utf-8', errors='ignore').strip('\x00').strip()
                             if version:
                                 result["device_version"] = version
-                    except:
+                    except Exception:
                         pass
                 elif command_hex == "0A" and len(data_section) >= 1:
                     result["fault_code"] = data_section[0]
@@ -215,58 +212,58 @@ class FeederBLEProtocol:
                     result["verification_success"] = data_section[0] == 1
         except Exception as e:
             result["error"] = str(e)
-        
+
         return result
-    
+
     def notification_handler(self, sender: BleakGATTCharacteristic, data: bytearray):
         """Handle notifications from the device"""
         self.received_data.append(data)
-    
+
     async def connect(self, timeout: float = 10.0) -> bool:
         """Connect to the device"""
         self.client = BleakClient(self.device_address, timeout=timeout)
-        
+
         try:
             await self.client.connect()
             await asyncio.sleep(0.5)
-            
+
             try:
                 services = self.client.services if hasattr(self.client, 'services') else await asyncio.wait_for(
                     self.client.get_services(), timeout=5.0
                 )
             except (asyncio.TimeoutError, AttributeError):
                 return False
-            
+
             service = services.get_service(self.service_uuid)
             if not service:
                 return False
-            
+
             write_char = service.get_characteristic(self.write_uuid)
             notify_char = service.get_characteristic(self.notify_uuid)
-            
+
             if not write_char or not notify_char:
                 return False
-            
+
             self.write_characteristic = write_char
             self.notify_characteristic = notify_char
-            
+
             if hasattr(write_char, 'properties'):
                 props = write_char.properties
                 if isinstance(props, list):
                     self.supports_write_response = 'write' in props or 'write-with-response' in props
                     self.supports_write_no_response = 'write-without-response' in props
-            
+
             await self.client.start_notify(notify_char, self.notification_handler)
             return True
         except Exception:
             return False
-    
+
     async def disconnect(self):
         """Disconnect from the device"""
         if self.client and self.client.is_connected:
             await self.client.stop_notify(self.notify_uuid)
             await self.client.disconnect()
-    
+
     async def send_verification_code(self, code: str = DEFAULT_VERIFICATION_CODE):
         """Send verification code to the device"""
         command = self.encode_command(CMD_SET_FAMILY_ID, length=4, action_hex=code)
@@ -275,7 +272,7 @@ class FeederBLEProtocol:
             await asyncio.sleep(2)
         except Exception:
             pass
-    
+
     async def query_fault(self):
         """Query fault status"""
         if not await self._ensure_connected():
@@ -286,7 +283,7 @@ class FeederBLEProtocol:
             await asyncio.sleep(1)
         except Exception:
             pass
-    
+
     async def query_child_lock(self):
         """Query child lock status"""
         if not await self._ensure_connected():
@@ -297,7 +294,7 @@ class FeederBLEProtocol:
             await asyncio.sleep(1)
         except Exception:
             pass
-    
+
     async def query_feeding_status(self):
         """Query feeding status"""
         if not await self._ensure_connected():
@@ -308,12 +305,12 @@ class FeederBLEProtocol:
             await asyncio.sleep(1)
         except Exception:
             pass
-    
+
     async def _ensure_connected(self) -> bool:
         """Ensure connection is still active"""
         if not self.client or not self.client.is_connected:
             return await self.connect()
-        
+
         try:
             if hasattr(self.client, 'services'):
                 if hasattr(self, 'notify_characteristic') and self.notify_characteristic:
