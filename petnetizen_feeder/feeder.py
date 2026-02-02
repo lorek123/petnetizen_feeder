@@ -5,14 +5,17 @@ Main library class for controlling feeder devices.
 """
 
 import asyncio
-from typing import List, Dict
+from datetime import datetime
+from typing import List, Dict, Optional
 from .protocol import (
     FeederBLEProtocol,
+    discover_feeders,
     CMD_FEEDING,
     CMD_SET_FEEDER_PLAN,
     CMD_CHILD_LOCK,
     CMD_REMINDER_TONE,
     CMD_QUERY_FEEDER_PLAN,
+    CMD_QUERY_NAME_VERSION,
     DEFAULT_VERIFICATION_CODE,
 )
 
@@ -95,17 +98,23 @@ class FeederDevice:
         asyncio.run(main())
     """
 
-    def __init__(self, address: str, verification_code: str = DEFAULT_VERIFICATION_CODE):
+    def __init__(
+        self,
+        address: str,
+        verification_code: str = DEFAULT_VERIFICATION_CODE,
+        device_type: Optional[str] = None,
+    ):
         """
         Initialize feeder device controller.
 
         Args:
             address: BLE device address (e.g., "E6:C0:07:09:A3:D3")
             verification_code: Verification code (default: "00000000")
+            device_type: Optional "standard", "jk", or "ali" (auto-detected from name if not set)
         """
         self.address = address
         self.verification_code = verification_code
-        self._protocol = FeederBLEProtocol(address)
+        self._protocol = FeederBLEProtocol(address, device_type=device_type)
         self._connected = False
 
     async def connect(self) -> bool:
@@ -330,6 +339,40 @@ class FeederDevice:
             return []
         except Exception as e:
             raise RuntimeError(f"Failed to query schedule: {e}") from e
+
+    async def get_device_info(self) -> Dict:
+        """
+        Query device name and firmware version.
+
+        Returns:
+            Dict with "device_name", "device_version" (or empty strings if not available).
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to device. Call connect() first.")
+        if not await self._protocol._ensure_connected():
+            raise RuntimeError("Connection lost. Please reconnect.")
+        before = len(self._protocol.received_data)
+        await self._protocol.query_name_version()
+        await asyncio.sleep(2)
+        result: Dict = {"device_name": "", "device_version": ""}
+        for data in self._protocol.received_data[before:]:
+            decoded = self._protocol.decode_notification(data)
+            if decoded.get("command") == "00":
+                result["device_name"] = decoded.get("device_name", "") or ""
+                result["device_version"] = decoded.get("device_version", "") or ""
+                break
+        return result
+
+    async def sync_time(self, dt: Optional[datetime] = None) -> None:
+        """
+        Sync device clock to the given time (default: now).
+
+        Args:
+            dt: Time to set on the device; defaults to datetime.now().
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to device. Call connect() first.")
+        await self._protocol.send_sync_time(dt)
 
     @property
     def is_connected(self) -> bool:

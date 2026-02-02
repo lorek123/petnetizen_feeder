@@ -9,6 +9,8 @@ A Python BLE library for controlling Petnetizen automatic pet feeders. Suitable 
 - ✅ **Child Lock**: Enable/disable child lock to prevent accidental feeding
 - ✅ **Sound Control**: Enable/disable reminder tone/sound notifications
 - ✅ **Device Status**: Query device information, feeding status, and fault codes
+- ✅ **Autodiscovery**: Scan for feeders via BLE (`discover_feeders()`)
+- ✅ **Time sync**: Sync device clock to host time (`sync_time()`)
 
 ## Installation
 
@@ -71,18 +73,47 @@ async def main():
 asyncio.run(main())
 ```
 
+### Autodiscovery and reading settings
+
+Discover feeders on BLE, connect to the first one, read device info and schedule, then sync time:
+
+```bash
+uv run python examples/read_settings_and_sync_time.py
+```
+
+```python
+from petnetizen_feeder import discover_feeders, FeederDevice
+
+async def main():
+    feeders = await discover_feeders(timeout=10.0)  # [(address, name, device_type), ...]
+    if not feeders:
+        return
+    address, name, device_type = feeders[0]
+    feeder = FeederDevice(address, device_type=device_type)
+    await feeder.connect()
+    info = await feeder.get_device_info()   # {"device_name": "...", "device_version": "..."}
+    schedules = await feeder.query_schedule()
+    await feeder.sync_time()                # sync device clock to now
+    await feeder.disconnect()
+```
+
 ## API Reference
+
+### `discover_feeders(timeout: float = 10.0) -> List[Tuple[str, str, str]]`
+
+Scan for Petnetizen feeders via BLE. Uses an **unfiltered** BLE scan (no service-UUID filter), then recognizes feeders by **advertised name prefix** (like the Android app: `bleNames` / `getDeviceTypeByName`). Returns a list of `(address, name, device_type)` for each feeder found. `device_type` is `"standard"`, `"jk"`, or `"ali"`. Use `device_type` when constructing `FeederDevice` for correct service UUIDs. Name prefixes: `Du`, `JK`, `ALI`, `PET`, `FEED` (see `FEEDER_NAME_PREFIXES` in `protocol.py` to extend).
 
 ### `FeederDevice`
 
 Main class for controlling feeder devices.
 
-#### `__init__(address: str, verification_code: str = "00000000")`
+#### `__init__(address: str, verification_code: str = "00000000", device_type: Optional[str] = None)`
 
 Initialize feeder device controller.
 
 - `address`: BLE device MAC address (e.g., "E6:C0:07:09:A3:D3")
 - `verification_code`: Verification code (default: "00000000")
+- `device_type`: Optional `"standard"`, `"jk"`, or `"ali"` (auto-detected from name if not set; use when discovered via `discover_feeders()`)
 
 #### `async connect() -> bool`
 
@@ -123,6 +154,14 @@ Set reminder tone/sound state.
 #### `async query_schedule() -> List[Dict]`
 
 Query current feed schedule. Returns list of schedule dictionaries.
+
+#### `async get_device_info() -> Dict`
+
+Query device name and firmware version. Returns `{"device_name": "...", "device_version": "..."}`.
+
+#### `async sync_time(dt: Optional[datetime] = None) -> None`
+
+Sync device clock to the given time (default: now).
 
 #### `is_connected: bool`
 

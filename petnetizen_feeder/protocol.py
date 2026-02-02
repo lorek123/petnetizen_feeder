@@ -5,9 +5,11 @@ This module handles the Tuya BLE protocol encoding/decoding and device communica
 """
 
 import asyncio
-from typing import Optional, Dict
-from bleak import BleakClient
+from datetime import datetime
+from typing import Optional, Dict, List, Tuple
+from bleak import BleakClient, BleakScanner
 from bleak.backends.characteristic import BleakGATTCharacteristic
+from bleak.backends.device import BLEDevice
 
 # BLE UUIDs for different device types
 FEEDER_SERVICE_UUID = "0000ae30-0000-1000-8000-00805f9b34fb"
@@ -47,6 +49,17 @@ CMD_REMINDER_TONE = "12"
 CMD_ATMOSPHERE_LIGHT = "13"
 
 
+# Service UUIDs for connection (per device type)
+FEEDER_SERVICE_UUIDS = [
+    FEEDER_SERVICE_UUID,
+    JK_FEEDER_SERVICE_UUID,
+    ALI_FEEDER_SERVICE_UUID,
+]
+
+# Name prefixes for discovery (Android app uses unfiltered scan + name prefix match via DeviceType.bleNames)
+FEEDER_NAME_PREFIXES = ("Du", "JK", "ALI", "PET", "FEED")
+
+
 def detect_device_type(device_name: Optional[str] = None) -> str:
     """Detect device type from name"""
     if not device_name:
@@ -58,6 +71,44 @@ def detect_device_type(device_name: Optional[str] = None) -> str:
     elif "ALI" in name_upper or "ALIBABA" in name_upper:
         return "ali"
     return "standard"
+
+
+def _is_feeder_by_name(name: str) -> bool:
+    """True if the advertised name matches a known feeder name prefix (Android-style)."""
+    if not name or not name.strip():
+        return False
+    name_upper = name.strip().upper()
+    return any(name_upper.startswith(p.upper()) for p in FEEDER_NAME_PREFIXES)
+
+
+async def discover_feeders(timeout: float = 10.0) -> List[Tuple[str, str, str]]:
+    """
+    Scan for Petnetizen feeder devices via BLE.
+
+    Uses unfiltered BLE scan (no service-UUID filter), then recognizes feeders by
+    advertised name prefix, matching the Android app behavior (bleNames / getDeviceTypeByName).
+
+    Returns:
+        List of (address, name, device_type) for each feeder found.
+        address is normalized (e.g. "E6:C0:07:09:A3:D3"), name is the advertised name,
+        device_type is "standard", "jk", or "ali".
+    """
+    devices = await BleakScanner.discover(timeout=timeout)
+    result: List[Tuple[str, str, str]] = []
+    seen: set = set()
+    for d in devices:
+        name = (d.name or "").strip()
+        if not _is_feeder_by_name(name):
+            continue
+        addr = d.address if isinstance(d.address, str) else str(d.address)
+        if len(addr) == 12 and ":" not in addr:
+            addr = ":".join(addr[i : i + 2] for i in range(0, 12, 2))
+        if addr in seen:
+            continue
+        seen.add(addr)
+        dev_type = detect_device_type(name)
+        result.append((addr, name, dev_type))
+    return result
 
 
 class FeederBLEProtocol:
@@ -270,6 +321,39 @@ class FeederBLEProtocol:
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
             await asyncio.sleep(2)
+        except Exception:
+            pass
+
+    async def query_name_version(self):
+        """Query device name and firmware version (response via notification, command 00)."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(CMD_QUERY_NAME_VERSION, length=0)
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(1.5)
+        except Exception:
+            pass
+
+    async def send_sync_time(self, dt: Optional[datetime] = None):
+        """Send current time to the device. Format: YY MM DD HH MM SS (6 bytes, year as 2 digits)."""
+        if not await self._ensure_connected():
+            return
+        if dt is None:
+            dt = datetime.now()
+        # 6 bytes: year%100, month, day, hour, minute, second
+        action_bytes = bytes([
+            dt.year % 100,
+            dt.month,
+            dt.day,
+            dt.hour,
+            dt.minute,
+            dt.second,
+        ])
+        command = self.encode_command(CMD_SYNC_TIME, length=6, action_hex=action_bytes.hex().upper())
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(1)
         except Exception:
             pass
 
