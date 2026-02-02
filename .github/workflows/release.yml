@@ -29,9 +29,7 @@ jobs:
         run: uv build
 
       - name: Publish to PyPI
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: uv publish --token ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish --token ${{ secrets.UV_PUBLISH_TOKEN }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
