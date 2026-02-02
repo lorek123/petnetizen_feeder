@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.2.0] - 2025-02-01
+
+### Added
+
+- `discover_feeders(timeout)` – BLE scan for feeders by name prefix (Du, JK, ALI, PET, FEED); returns list of `(address, name, device_type)`.
+- `FeederDevice.get_device_info()` – returns `device_name` and `device_version`.
+- `FeederDevice.sync_time(dt)` – sync device clock with host (default: now).
+- Optional `device_type` on `FeederDevice` for standard/jk/ali.
+- Example script: `examples/read_settings_and_sync_time.py`.
+
 ## [0.1.0] - 2025-02-01
 
 ### Added
@@ -20,5 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for standard, JK, and ALI device UUIDs.
 - PyPI-ready packaging with `pyproject.toml` and uv.
 
-[Unreleased]: https://github.com/lorek123/petnetizen-feeder/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/lorek123/petnetizen-feeder/releases/tag/v0.1.0
+[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/lorek123/petnetizen_feeder/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/lorek123/petnetizen_feeder/releases/tag/v0.1.0
