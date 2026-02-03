@@ -263,11 +263,16 @@ class FeederBLEProtocol:
                     result["verification_success"] = data_section[0] == 1
                 elif command_hex == "11":
                     # QUERY_FEEDER_PLAN response: 5 bytes per slot (week, hour, minute, portions, enabled)
+                    # Some firmwares send [num_slots] + slots; others send slots only
                     slots = []
-                    for i in range(0, len(data_section), 5):
-                        if i + 5 > len(data_section):
-                            break
-                        week_val, hour, minute, portions, enabled = data_section[i : i + 5]
+                    offset = 0
+                    if len(data_section) >= 1 and 1 <= data_section[0] <= 15:
+                        # First byte might be slot count
+                        n = data_section[0]
+                        if len(data_section) >= 1 + 5 * n:
+                            offset = 1
+                    while offset + 5 <= len(data_section):
+                        week_val, hour, minute, portions, enabled = data_section[offset : offset + 5]
                         weekdays = [
                             d for bit, d in [
                                 (1, "sun"), (2, "mon"), (4, "tue"), (8, "wed"),
@@ -281,6 +286,7 @@ class FeederBLEProtocol:
                             "portions": portions,
                             "enabled": bool(enabled),
                         })
+                        offset += 5
                     if slots:
                         result["feed_plan_slots"] = slots
         except Exception as e:

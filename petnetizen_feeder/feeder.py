@@ -5,6 +5,7 @@ Main library class for controlling feeder devices.
 """
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import Any, List, Dict, Optional
 from .protocol import (
@@ -18,6 +19,8 @@ from .protocol import (
     CMD_QUERY_NAME_VERSION,
     DEFAULT_VERIFICATION_CODE,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 # Weekday bitmask values (from FeedInfo.Companion.getWeekValue)
 WEEKDAY_BITMASK = {
@@ -329,16 +332,31 @@ class FeederDevice:
             await self._protocol.client.write_gatt_char(
                 self._protocol.write_uuid, command, response=False
             )
-            await asyncio.sleep(2)
+            await asyncio.sleep(2.5)
 
             # Parse response
-            if len(self._protocol.received_data) > notification_count_before:
+            new_count = len(self._protocol.received_data) - notification_count_before
+            if new_count > 0:
                 new_notifications = self._protocol.received_data[notification_count_before:]
+                _LOGGER.debug(
+                    "query_schedule: got %d new notification(s)", len(new_notifications)
+                )
                 for data in new_notifications:
                     decoded = self._protocol.decode_notification(data)
-                    if decoded.get("command") == "11":  # QUERY_FEEDER_PLAN
-                        return decoded.get("feed_plan_slots") or []
-
+                    cmd = decoded.get("command")
+                    if cmd == "11":  # QUERY_FEEDER_PLAN
+                        slots = decoded.get("feed_plan_slots") or []
+                        if slots:
+                            return slots
+                        # 0x11 but no parsed slots - data might be different format
+                        if "data_hex" in decoded:
+                            _LOGGER.debug(
+                                "QUERY_FEEDER_PLAN response data_hex=%s len=%s",
+                                decoded.get("data_hex"),
+                                len(data) if hasattr(data, "__len__") else None,
+                            )
+                    elif cmd and "error" not in decoded:
+                        _LOGGER.debug("query_schedule saw notification cmd=%s", cmd)
             return []
         except Exception as e:
             raise RuntimeError(f"Failed to query schedule: {e}") from e

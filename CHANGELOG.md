@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.2.5] - 2025-02-01
+
+### Fixed
+
+- `query_schedule()`: support length-prefixed QUERY_FEEDER_PLAN response (some firmwares send `[num_slots]` + slots). Longer wait (2.5s) for device response. Debug logging when parsing fails or notifications are received.
+
 ## [0.2.4] - 2025-02-01
 
 ### Fixed
@@ -42,7 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for standard, JK, and ALI device UUIDs.
 - PyPI-ready packaging with `pyproject.toml` and uv.
 
-[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.1...v0.2.2
