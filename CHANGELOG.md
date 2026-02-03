@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.2.7] - 2025-02-01
+
+### Added
+
+- `FeederDevice.get_child_lock_status()` – query child lock state from device (True/False/None).
+- `FeederDevice.get_prompt_sound_status()` – query prompt sound/reminder tone state from device (True/False/None).
+- Protocol: decode command 0x12 (REMINDER_TONE) response; `query_reminder_tone()`.
+
 ## [0.2.6] - 2025-02-01
 
 ### Fixed
@@ -54,7 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for standard, JK, and ALI device UUIDs.
 - PyPI-ready packaging with `pyproject.toml` and uv.
 
-[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.3...v0.2.4

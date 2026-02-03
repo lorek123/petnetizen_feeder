@@ -384,6 +384,46 @@ class FeederDevice:
                 break
         return result
 
+    async def get_child_lock_status(self) -> Optional[bool]:
+        """
+        Query child lock status from the device.
+
+        Returns:
+            True if locked, False if unlocked, or None if query failed or no response.
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to device. Call connect() first.")
+        if not await self._protocol._ensure_connected():
+            raise RuntimeError("Connection lost. Please reconnect.")
+        before = len(self._protocol.received_data)
+        await self._protocol.query_child_lock()
+        await asyncio.sleep(1.5)
+        for data in self._protocol.received_data[before:]:
+            decoded = self._protocol.decode_notification(data)
+            if decoded.get("command") == "0D" and "child_lock" in decoded:
+                return decoded["child_lock"] == 1
+        return None
+
+    async def get_prompt_sound_status(self) -> Optional[bool]:
+        """
+        Query prompt sound / reminder tone status from the device.
+
+        Returns:
+            True if sound is on, False if off, or None if query failed or no response.
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to device. Call connect() first.")
+        if not await self._protocol._ensure_connected():
+            raise RuntimeError("Connection lost. Please reconnect.")
+        before = len(self._protocol.received_data)
+        await self._protocol.query_reminder_tone()
+        await asyncio.sleep(1.5)
+        for data in self._protocol.received_data[before:]:
+            decoded = self._protocol.decode_notification(data)
+            if decoded.get("command") == "12" and "prompt_sound" in decoded:
+                return decoded["prompt_sound"] == 1
+        return None
+
     async def sync_time(self, dt: Optional[datetime] = None) -> None:
         """
         Sync device clock to the given time (default: now).

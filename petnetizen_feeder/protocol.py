@@ -238,6 +238,9 @@ class FeederBLEProtocol:
                 elif command_hex == "0D" and len(data_section) >= 1:
                     result["child_lock"] = data_section[0]
                     result["child_lock_text"] = "LOCKED" if data_section[0] == 1 else "UNLOCKED"
+                elif command_hex == "12" and len(data_section) >= 1:
+                    result["prompt_sound"] = data_section[0]
+                    result["prompt_sound_text"] = "ON" if data_section[0] == 1 else "OFF"
                 elif command_hex == "08" and len(data_section) >= 1:
                     result["feed_response"] = data_section[0]
                     result["feed_response_text"] = "Triggered" if data_section[0] == 1 else f"Status({data_section[0]})"
@@ -406,6 +409,17 @@ class FeederBLEProtocol:
         if not await self._ensure_connected():
             return
         command = self.encode_command(CMD_CHILD_LOCK, length=0)
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(1)
+        except Exception:
+            pass
+
+    async def query_reminder_tone(self):
+        """Query prompt sound / reminder tone status"""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(CMD_REMINDER_TONE, length=0)
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
             await asyncio.sleep(1)
