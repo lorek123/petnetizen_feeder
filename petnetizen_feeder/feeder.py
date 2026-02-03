@@ -144,12 +144,14 @@ class FeederDevice:
         await self._protocol.disconnect()
         self._connected = False
 
-    async def feed(self, portions: int = 1) -> bool:
+    async def feed(self, portions: int = 1, *, fast: bool = True) -> bool:
         """
         Trigger manual feed with specified number of portions.
 
         Args:
             portions: Number of portions to feed (1-15, typically 1-3)
+            fast: If True (default), skip pre-queries (fault, child lock, feeding status)
+                  for a quicker response. Set False to check device state before feeding.
 
         Returns:
             True if feed command was acknowledged, False otherwise
@@ -164,13 +166,14 @@ class FeederDevice:
         if not await self._protocol._ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
 
-        # Check device state
-        await self._protocol.query_fault()
-        await asyncio.sleep(0.5)
-        await self._protocol.query_child_lock()
-        await asyncio.sleep(0.5)
-        await self._protocol.query_feeding_status()
-        await asyncio.sleep(0.5)
+        if not fast:
+            # Check device state (adds ~1.5s of round-trips and sleeps)
+            await self._protocol.query_fault()
+            await asyncio.sleep(0.5)
+            await self._protocol.query_child_lock()
+            await asyncio.sleep(0.5)
+            await self._protocol.query_feeding_status()
+            await asyncio.sleep(0.5)
 
         # Send feed command
         # Format: EA + 08 + 01 + portions(1 byte) + 00 + AE
@@ -183,10 +186,10 @@ class FeederDevice:
                 self._protocol.write_uuid, command, response=False
             )
 
-            # Wait for response
+            # Wait for response (check every 0.25s so we return as soon as device responds)
             feed_triggered = False
-            for _ in range(20):  # Wait up to 10 seconds
-                await asyncio.sleep(0.5)
+            for _ in range(40):  # Wait up to 10 seconds
+                await asyncio.sleep(0.25)
                 if len(self._protocol.received_data) > notification_count_before:
                     new_notifications = self._protocol.received_data[notification_count_before:]
                     for data in new_notifications:

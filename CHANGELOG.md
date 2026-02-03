@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.2.8] - 2025-02-01
+
+### Changed
+
+- `feed(portions=..., fast=True)`: default `fast=True` skips pre-queries (fault, child lock, feeding status) so feed responds in ~0.5–2 s instead of ~2–4 s. Use `fast=False` to check device state before feeding.
+- Feed response polling: check every 0.25 s instead of 0.5 s so the call returns as soon as the device acknowledges.
+
 ## [0.2.7] - 2025-02-01
 
 ### Added
