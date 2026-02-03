@@ -270,14 +270,19 @@ class FeederBLEProtocol:
         """Handle notifications from the device"""
         self.received_data.append(data)
 
-    async def connect(self, timeout: float = 10.0) -> bool:
-        """Connect to the device"""
-        self.client = BleakClient(self.device_address, timeout=timeout)
+    async def connect(self, timeout: float = 10.0, ble_client: Optional[BleakClient] = None) -> bool:
+        """Connect to the device. If ble_client is provided (e.g. from bleak_retry_connector), use it."""
+        if ble_client is not None:
+            self.client = ble_client
+        else:
+            self.client = BleakClient(self.device_address, timeout=timeout)
+            try:
+                await self.client.connect()
+                await asyncio.sleep(0.5)
+            except Exception:
+                return False
 
         try:
-            await self.client.connect()
-            await asyncio.sleep(0.5)
-
             try:
                 services = self.client.services if hasattr(self.client, 'services') else await asyncio.wait_for(
                     self.client.get_services(), timeout=5.0

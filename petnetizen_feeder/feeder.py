@@ -6,7 +6,7 @@ Main library class for controlling feeder devices.
 
 import asyncio
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from .protocol import (
     FeederBLEProtocol,
     discover_feeders,
@@ -117,14 +117,18 @@ class FeederDevice:
         self._protocol = FeederBLEProtocol(address, device_type=device_type)
         self._connected = False
 
-    async def connect(self) -> bool:
+    async def connect(self, ble_client: Optional[Any] = None) -> bool:
         """
         Connect to the feeder device.
+
+        Args:
+            ble_client: Optional already-connected BleakClient (e.g. from bleak_retry_connector).
+                        When provided, the library uses it instead of creating a new connection.
 
         Returns:
             True if connection successful, False otherwise
         """
-        if await self._protocol.connect():
+        if await self._protocol.connect(ble_client=ble_client):
             # Send verification code
             await self._protocol.send_verification_code(self.verification_code)
             await asyncio.sleep(0.5)
