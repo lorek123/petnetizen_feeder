@@ -18,7 +18,6 @@ dist/
 
 # uv
 .uv/
-uv.lock
 
 # Tests / coverage / quality
 .pytest_cache/
