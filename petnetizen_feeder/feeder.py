@@ -332,7 +332,7 @@ class FeederDevice:
             await self._protocol.client.write_gatt_char(
                 self._protocol.write_uuid, command, response=False
             )
-            await asyncio.sleep(2.5)
+            await asyncio.sleep(4.0)
 
             # Parse response
             new_count = len(self._protocol.received_data) - notification_count_before
