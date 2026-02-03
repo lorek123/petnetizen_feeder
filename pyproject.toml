@@ -1,6 +1,6 @@
 [project]
 name = "petnetizen-feeder"
-version = "0.2.1"
+version = "0.2.2"
 description = "Python BLE library for Petnetizen automatic pet feeders (Home Assistant–friendly)"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -18,7 +18,7 @@ classifiers = [
     "Topic :: Home Automation",
 ]
 dependencies = [
-    "bleak>=2.1.1",
+    "bleak>=2.0.0",
 ]
 
 [project.urls]
