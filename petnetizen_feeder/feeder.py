@@ -337,8 +337,7 @@ class FeederDevice:
                 for data in new_notifications:
                     decoded = self._protocol.decode_notification(data)
                     if decoded.get("command") == "11":  # QUERY_FEEDER_PLAN
-                        # TODO: Parse schedule data
-                        return []
+                        return decoded.get("feed_plan_slots") or []
 
             return []
         except Exception as e:

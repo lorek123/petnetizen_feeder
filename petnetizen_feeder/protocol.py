@@ -261,6 +261,28 @@ class FeederBLEProtocol:
                 elif command_hex == "06" and len(data_section) >= 1:
                     result["verification_response"] = data_section[0]
                     result["verification_success"] = data_section[0] == 1
+                elif command_hex == "11":
+                    # QUERY_FEEDER_PLAN response: 5 bytes per slot (week, hour, minute, portions, enabled)
+                    slots = []
+                    for i in range(0, len(data_section), 5):
+                        if i + 5 > len(data_section):
+                            break
+                        week_val, hour, minute, portions, enabled = data_section[i : i + 5]
+                        weekdays = [
+                            d for bit, d in [
+                                (1, "sun"), (2, "mon"), (4, "tue"), (8, "wed"),
+                                (16, "thu"), (32, "fri"), (64, "sat"),
+                            ]
+                            if week_val & bit
+                        ]
+                        slots.append({
+                            "weekdays": weekdays,
+                            "time": f"{hour:02d}:{minute:02d}",
+                            "portions": portions,
+                            "enabled": bool(enabled),
+                        })
+                    if slots:
+                        result["feed_plan_slots"] = slots
         except Exception as e:
             result["error"] = str(e)
 
