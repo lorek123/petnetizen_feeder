@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.3.0] - 2025-02-19
+
+### Fixed
+
+- `_ensure_connected()`: removed notification stop/start cycle that ran on every command, which could destabilize the BLE link on Linux/BlueZ.
+
+### Added
+
+- `FeederDevice.reconnect(ble_client)`: accept a fresh BleakClient (e.g. from `bleak_retry_connector`) and re-establish the session (service discovery, verification code) without tearing down the whole device object. Enables proper HA-level reconnection.
+- `FeederBLEProtocol.replace_client(ble_client)`: cleanly swap the underlying BleakClient.
+- `FeederBLEProtocol.clear_notifications()`: clear accumulated notification data.
+- All command methods now clear stale notifications before sending, preventing unbounded `received_data` growth over long-running sessions.
+
 ## [0.2.9] - 2025-02-19
 
 ### Added
@@ -78,7 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for standard, JK, and ALI device UUIDs.
 - PyPI-ready packaging with `pyproject.toml` and uv.
 
-[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.9...v0.3.0
 [0.2.9]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.6...v0.2.7

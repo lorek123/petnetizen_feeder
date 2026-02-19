@@ -141,6 +141,28 @@ class FeederDevice:
         _LOGGER.warning("Failed to connect to feeder %s", self.address)
         return False
 
+    async def reconnect(self, ble_client: Optional[Any] = None) -> bool:
+        """
+        Reconnect with an optional new BleakClient.
+
+        Use this when the integration obtains a fresh BleakClient (e.g. via
+        bleak_retry_connector) and needs to hand it to the library.
+        """
+        _LOGGER.debug("Reconnecting to feeder %s", self.address)
+        self._connected = False
+        if ble_client is not None:
+            ok = await self._protocol.replace_client(ble_client)
+        else:
+            ok = await self._protocol.connect()
+        if ok:
+            await self._protocol.send_verification_code(self.verification_code)
+            await asyncio.sleep(0.5)
+            self._connected = True
+            _LOGGER.info("Reconnected to feeder %s", self.address)
+        else:
+            _LOGGER.warning("Failed to reconnect to feeder %s", self.address)
+        return ok
+
     async def disconnect(self):
         """Disconnect from the device"""
         _LOGGER.debug("Disconnecting from feeder %s", self.address)
@@ -181,6 +203,7 @@ class FeederDevice:
 
         command = self._protocol.encode_command(CMD_FEEDING, length=1, action_hex=f"{portions:02X}")
 
+        self._protocol.clear_notifications()
         notification_count_before = len(self._protocol.received_data)
 
         try:
@@ -346,6 +369,7 @@ class FeederDevice:
         _LOGGER.debug("Querying schedule")
         command = self._protocol.encode_command(CMD_QUERY_FEEDER_PLAN, length=0)
 
+        self._protocol.clear_notifications()
         notification_count_before = len(self._protocol.received_data)
 
         try:
@@ -394,6 +418,7 @@ class FeederDevice:
         if not await self._protocol._ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
         _LOGGER.debug("Querying device info")
+        self._protocol.clear_notifications()
         before = len(self._protocol.received_data)
         await self._protocol.query_name_version()
         await asyncio.sleep(2)
@@ -424,6 +449,7 @@ class FeederDevice:
         if not await self._protocol._ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
         _LOGGER.debug("Querying child lock status")
+        self._protocol.clear_notifications()
         before = len(self._protocol.received_data)
         await self._protocol.query_child_lock()
         await asyncio.sleep(1.5)
@@ -448,6 +474,7 @@ class FeederDevice:
         if not await self._protocol._ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
         _LOGGER.debug("Querying prompt sound status")
+        self._protocol.clear_notifications()
         before = len(self._protocol.received_data)
         await self._protocol.query_reminder_tone()
         await asyncio.sleep(1.5)

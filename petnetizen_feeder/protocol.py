@@ -300,6 +300,10 @@ class FeederBLEProtocol:
 
         return result
 
+    def clear_notifications(self) -> None:
+        """Clear accumulated notification data."""
+        self.received_data.clear()
+
     def notification_handler(self, sender: BleakGATTCharacteristic, data: bytearray):
         """Handle notifications from the device"""
         _LOGGER.debug(
@@ -389,6 +393,20 @@ class FeederBLEProtocol:
             _LOGGER.debug("[%s] Disconnected", self.device_address)
         else:
             _LOGGER.debug("[%s] Disconnect called but not connected", self.device_address)
+
+    async def replace_client(self, ble_client: BleakClient) -> bool:
+        """Replace BleakClient with a freshly connected one (for integration-level reconnection)."""
+        if self.client:
+            try:
+                if self.client.is_connected:
+                    try:
+                        await self.client.stop_notify(self.notify_uuid)
+                    except Exception:
+                        pass
+                    await self.client.disconnect()
+            except Exception:
+                pass
+        return await self.connect(ble_client=ble_client)
 
     async def send_verification_code(self, code: str = DEFAULT_VERIFICATION_CODE):
         """Send verification code to the device"""
@@ -493,43 +511,17 @@ class FeederBLEProtocol:
             )
 
     async def _ensure_connected(self) -> bool:
-        """Ensure connection is still active"""
-        if not self.client or not self.client.is_connected:
-            _LOGGER.info(
-                "[%s] Connection lost (client=%s, is_connected=%s), reconnecting",
-                self.device_address,
-                self.client is not None,
-                self.client.is_connected if self.client else "N/A",
-            )
-            result = await self.connect()
-            if not result:
-                _LOGGER.warning("[%s] Reconnection failed", self.device_address)
-            else:
-                _LOGGER.info("[%s] Reconnected successfully", self.device_address)
-            return result
-
-        try:
-            if hasattr(self.client, 'services'):
-                if hasattr(self, 'notify_characteristic') and self.notify_characteristic:
-                    try:
-                        await self.client.stop_notify(self.notify_uuid)
-                        await asyncio.sleep(0.1)
-                        await self.client.start_notify(self.notify_characteristic, self.notification_handler)
-                    except Exception as exc:
-                        _LOGGER.debug(
-                            "[%s] Notification restart during ensure_connected: %s",
-                            self.device_address, exc,
-                        )
+        """Ensure connection is still active."""
+        if self.client and self.client.is_connected:
             return True
-        except Exception as exc:
-            _LOGGER.warning(
-                "[%s] Connection check failed (%s), reconnecting",
-                self.device_address, exc,
-            )
-            await self.disconnect()
-            result = await self.connect()
-            if not result:
-                _LOGGER.warning("[%s] Reconnection after check failure failed", self.device_address)
-            else:
-                _LOGGER.info("[%s] Reconnected after check failure", self.device_address)
-            return result
+
+        _LOGGER.info(
+            "[%s] Connection lost, attempting reconnect",
+            self.device_address,
+        )
+        result = await self.connect()
+        if result:
+            _LOGGER.info("[%s] Reconnected successfully", self.device_address)
+        else:
+            _LOGGER.warning("[%s] Reconnection failed", self.device_address)
+        return result
