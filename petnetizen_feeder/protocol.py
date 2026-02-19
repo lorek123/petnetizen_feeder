@@ -312,7 +312,7 @@ class FeederBLEProtocol:
         )
         self.received_data.append(data)
 
-    async def connect(self, timeout: float = 10.0, ble_client: Optional[BleakClient] = None) -> bool:
+    async def connect(self, timeout: float = 10.0, ble_client: Optional[BleakClient] = None, verification_code: Optional[str] = None) -> bool:
         """Connect to the device. If ble_client is provided (e.g. from bleak_retry_connector), use it."""
         if ble_client is not None:
             _LOGGER.debug("[%s] Using provided BleakClient", self.device_address)
@@ -371,6 +371,20 @@ class FeederBLEProtocol:
                     self.supports_write_response = 'write' in props or 'write-with-response' in props
                     self.supports_write_no_response = 'write-without-response' in props
 
+            # Send verification code before enabling notifications — the device
+            # disconnects (HCI error 19) if start_notify is called without auth.
+            if verification_code is not None:
+                try:
+                    command = self.encode_command(CMD_SET_FAMILY_ID, length=4, action_hex=verification_code)
+                    await self.client.write_gatt_char(self.write_uuid, command, response=False)
+                    _LOGGER.debug("[%s] Verification code sent", self.device_address)
+                    await asyncio.sleep(1.0)
+                except Exception as exc:
+                    _LOGGER.warning(
+                        "[%s] Failed to send verification code: %s", self.device_address, exc,
+                    )
+                    return False
+
             last_exc: Optional[Exception] = None
             for attempt in range(3):
                 if not self.client.is_connected:
@@ -419,7 +433,7 @@ class FeederBLEProtocol:
         else:
             _LOGGER.debug("[%s] Disconnect called but not connected", self.device_address)
 
-    async def replace_client(self, ble_client: BleakClient) -> bool:
+    async def replace_client(self, ble_client: BleakClient, verification_code: Optional[str] = None) -> bool:
         """Replace BleakClient with a freshly connected one (for integration-level reconnection)."""
         if self.client:
             try:
@@ -431,7 +445,7 @@ class FeederBLEProtocol:
                     await self.client.disconnect()
             except Exception:
                 pass
-        return await self.connect(ble_client=ble_client)
+        return await self.connect(ble_client=ble_client, verification_code=verification_code)
 
     async def send_verification_code(self, code: str = DEFAULT_VERIFICATION_CODE):
         """Send verification code to the device"""
