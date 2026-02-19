@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.3.2] - 2025-02-19
+
+### Changed
+
+- Replace blind 1-second sleep with explicit `get_services()` GATT round-trip as connection-readiness proof — faster when the device is ready, and fails fast when the link is broken instead of sleeping into a dead connection.
+- Check `is_connected` between `start_notify` retries — bail immediately if the peripheral terminated the connection instead of retrying on a dead link.
+
 ## [0.3.1] - 2025-02-19
 
 ### Fixed
@@ -98,7 +105,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for standard, JK, and ALI device UUIDs.
 - PyPI-ready packaging with `pyproject.toml` and uv.
 
-[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.9...v0.3.0
 [0.2.9]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.8...v0.2.9

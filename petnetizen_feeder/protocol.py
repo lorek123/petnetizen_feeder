@@ -330,21 +330,21 @@ class FeederBLEProtocol:
                 )
                 return False
 
-        # Let the GATT layer settle before issuing operations — BlueZ can
-        # drop the connection if we start_notify too quickly after connect.
-        await asyncio.sleep(1.0)
+        # Force fresh GATT service discovery over the air — this is an actual
+        # BLE round-trip that proves the connection is stable and the GATT layer
+        # is ready, replacing a blind sleep.  Cached services from
+        # bleak_retry_connector skip the wire check and can mask a flaky link.
+        try:
+            services = await asyncio.wait_for(
+                self.client.get_services(), timeout=10.0
+            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            _LOGGER.warning(
+                "[%s] Service discovery failed: %s", self.device_address, exc,
+            )
+            return False
 
         try:
-            try:
-                services = self.client.services if hasattr(self.client, 'services') else await asyncio.wait_for(
-                    self.client.get_services(), timeout=5.0
-                )
-            except (asyncio.TimeoutError, AttributeError) as exc:
-                _LOGGER.warning(
-                    "[%s] Service discovery failed: %s", self.device_address, exc,
-                )
-                return False
-
             service = services.get_service(self.service_uuid)
             if not service:
                 _LOGGER.warning(
@@ -374,6 +374,12 @@ class FeederBLEProtocol:
 
             last_exc: Optional[Exception] = None
             for attempt in range(3):
+                if not self.client.is_connected:
+                    _LOGGER.warning(
+                        "[%s] Peripheral disconnected before start_notify (attempt %d/3)",
+                        self.device_address, attempt + 1,
+                    )
+                    return False
                 try:
                     await self.client.start_notify(notify_char, self.notification_handler)
                     _LOGGER.debug("[%s] Connected and notifications started", self.device_address)
@@ -384,7 +390,8 @@ class FeederBLEProtocol:
                         "[%s] start_notify attempt %d/3 failed: %s",
                         self.device_address, attempt + 1, exc,
                     )
-                    await asyncio.sleep(2.0)
+                    if attempt < 2:
+                        await asyncio.sleep(2.0)
 
             _LOGGER.warning(
                 "[%s] Post-connect setup failed after 3 attempts: %s",
