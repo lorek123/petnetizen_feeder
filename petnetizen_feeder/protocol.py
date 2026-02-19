@@ -330,15 +330,14 @@ class FeederBLEProtocol:
                 )
                 return False
 
-        # Force fresh GATT service discovery over the air — this is an actual
-        # BLE round-trip that proves the connection is stable and the GATT layer
-        # is ready, replacing a blind sleep.  Cached services from
-        # bleak_retry_connector skip the wire check and can mask a flaky link.
+        # Access GATT services discovered during connect().  Modern bleak (0.20+)
+        # and HaBleakClientWrapper (bleak-retry-connector) expose services via
+        # the client.services property; get_services() no longer exists.
         try:
-            services = await asyncio.wait_for(
-                self.client.get_services(), timeout=10.0
-            )
-        except (asyncio.TimeoutError, Exception) as exc:
+            services = self.client.services
+            if services is None:
+                raise RuntimeError("Service discovery not complete – no services available")
+        except Exception as exc:
             _LOGGER.warning(
                 "[%s] Service discovery failed: %s", self.device_address, exc,
             )
