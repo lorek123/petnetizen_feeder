@@ -132,7 +132,8 @@ class FeederDevice:
             True if connection successful, False otherwise
         """
         _LOGGER.debug("Connecting to feeder %s", self.address)
-        if await self._protocol.connect(ble_client=ble_client, verification_code=self.verification_code):
+        if await self._protocol.connect(ble_client=ble_client):
+            await self._protocol.send_verification_code(self.verification_code)
             self._connected = True
             _LOGGER.info("Connected to feeder %s", self.address)
             return True
@@ -149,10 +150,11 @@ class FeederDevice:
         _LOGGER.debug("Reconnecting to feeder %s", self.address)
         self._connected = False
         if ble_client is not None:
-            ok = await self._protocol.replace_client(ble_client, verification_code=self.verification_code)
+            ok = await self._protocol.replace_client(ble_client)
         else:
-            ok = await self._protocol.connect(verification_code=self.verification_code)
+            ok = await self._protocol.connect()
         if ok:
+            await self._protocol.send_verification_code(self.verification_code)
             self._connected = True
             _LOGGER.info("Reconnected to feeder %s", self.address)
         else:

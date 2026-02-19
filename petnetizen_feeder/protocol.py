@@ -312,7 +312,7 @@ class FeederBLEProtocol:
         )
         self.received_data.append(data)
 
-    async def connect(self, timeout: float = 10.0, ble_client: Optional[BleakClient] = None, verification_code: Optional[str] = None) -> bool:
+    async def connect(self, timeout: float = 10.0, ble_client: Optional[BleakClient] = None) -> bool:
         """Connect to the device. If ble_client is provided (e.g. from bleak_retry_connector), use it."""
         if ble_client is not None:
             _LOGGER.debug("[%s] Using provided BleakClient", self.device_address)
@@ -371,46 +371,12 @@ class FeederBLEProtocol:
                     self.supports_write_response = 'write' in props or 'write-with-response' in props
                     self.supports_write_no_response = 'write-without-response' in props
 
-            # Send verification code before enabling notifications — the device
-            # disconnects (HCI error 19) if start_notify is called without auth.
-            if verification_code is not None:
-                try:
-                    command = self.encode_command(CMD_SET_FAMILY_ID, length=4, action_hex=verification_code)
-                    await self.client.write_gatt_char(self.write_uuid, command, response=False)
-                    _LOGGER.debug("[%s] Verification code sent", self.device_address)
-                    await asyncio.sleep(1.0)
-                except Exception as exc:
-                    _LOGGER.warning(
-                        "[%s] Failed to send verification code: %s", self.device_address, exc,
-                    )
-                    return False
-
-            last_exc: Optional[Exception] = None
-            for attempt in range(3):
-                if not self.client.is_connected:
-                    _LOGGER.warning(
-                        "[%s] Peripheral disconnected before start_notify (attempt %d/3)",
-                        self.device_address, attempt + 1,
-                    )
-                    return False
-                try:
-                    await self.client.start_notify(notify_char, self.notification_handler)
-                    _LOGGER.debug("[%s] Connected and notifications started", self.device_address)
-                    return True
-                except Exception as exc:
-                    last_exc = exc
-                    _LOGGER.warning(
-                        "[%s] start_notify attempt %d/3 failed: %s",
-                        self.device_address, attempt + 1, exc,
-                    )
-                    if attempt < 2:
-                        await asyncio.sleep(0.3)
-
-            _LOGGER.warning(
-                "[%s] Post-connect setup failed after 3 attempts: %s",
-                self.device_address, last_exc,
-            )
-            return False
+            # start_notify immediately — the device requires this before any writes
+            # (including the verification code). Sending writes first causes the device
+            # to disconnect with HCI error 19 on the subsequent start_notify CCCD write.
+            await self.client.start_notify(notify_char, self.notification_handler)
+            _LOGGER.debug("[%s] Connected and notifications started", self.device_address)
+            return True
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] Post-connect setup failed: %s", self.device_address, exc,
@@ -433,7 +399,7 @@ class FeederBLEProtocol:
         else:
             _LOGGER.debug("[%s] Disconnect called but not connected", self.device_address)
 
-    async def replace_client(self, ble_client: BleakClient, verification_code: Optional[str] = None) -> bool:
+    async def replace_client(self, ble_client: BleakClient) -> bool:
         """Replace BleakClient with a freshly connected one (for integration-level reconnection)."""
         if self.client:
             try:
@@ -445,7 +411,7 @@ class FeederBLEProtocol:
                     await self.client.disconnect()
             except Exception:
                 pass
-        return await self.connect(ble_client=ble_client, verification_code=verification_code)
+        return await self.connect(ble_client=ble_client)
 
     async def send_verification_code(self, code: str = DEFAULT_VERIFICATION_CODE):
         """Send verification code to the device"""
