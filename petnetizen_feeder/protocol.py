@@ -385,12 +385,12 @@ class FeederBLEProtocol:
                     return True
                 except Exception as exc:
                     last_exc = exc
-                    _LOGGER.debug(
+                    _LOGGER.warning(
                         "[%s] start_notify attempt %d/3 failed: %s",
                         self.device_address, attempt + 1, exc,
                     )
                     if attempt < 2:
-                        await asyncio.sleep(2.0)
+                        await asyncio.sleep(0.3)
 
             _LOGGER.warning(
                 "[%s] Post-connect setup failed after 3 attempts: %s",
