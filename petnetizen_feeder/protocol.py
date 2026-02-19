@@ -5,11 +5,14 @@ This module handles the Tuya BLE protocol encoding/decoding and device communica
 """
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 from bleak import BleakClient, BleakScanner
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
+
+_LOGGER = logging.getLogger(__name__)
 
 # BLE UUIDs for different device types
 FEEDER_SERVICE_UUID = "0000ae30-0000-1000-8000-00805f9b34fb"
@@ -299,18 +302,29 @@ class FeederBLEProtocol:
 
     def notification_handler(self, sender: BleakGATTCharacteristic, data: bytearray):
         """Handle notifications from the device"""
+        _LOGGER.debug(
+            "[%s] Notification received: %s (%d bytes)",
+            self.device_address, data.hex().upper(), len(data),
+        )
         self.received_data.append(data)
 
     async def connect(self, timeout: float = 10.0, ble_client: Optional[BleakClient] = None) -> bool:
         """Connect to the device. If ble_client is provided (e.g. from bleak_retry_connector), use it."""
         if ble_client is not None:
+            _LOGGER.debug("[%s] Using provided BleakClient", self.device_address)
             self.client = ble_client
         else:
+            _LOGGER.debug(
+                "[%s] Creating BleakClient (timeout=%ss)", self.device_address, timeout,
+            )
             self.client = BleakClient(self.device_address, timeout=timeout)
             try:
                 await self.client.connect()
                 await asyncio.sleep(0.5)
-            except Exception:
+            except Exception as exc:
+                _LOGGER.warning(
+                    "[%s] BLE connect failed: %s", self.device_address, exc,
+                )
                 return False
 
         try:
@@ -318,17 +332,28 @@ class FeederBLEProtocol:
                 services = self.client.services if hasattr(self.client, 'services') else await asyncio.wait_for(
                     self.client.get_services(), timeout=5.0
                 )
-            except (asyncio.TimeoutError, AttributeError):
+            except (asyncio.TimeoutError, AttributeError) as exc:
+                _LOGGER.warning(
+                    "[%s] Service discovery failed: %s", self.device_address, exc,
+                )
                 return False
 
             service = services.get_service(self.service_uuid)
             if not service:
+                _LOGGER.warning(
+                    "[%s] Service %s not found on device",
+                    self.device_address, self.service_uuid,
+                )
                 return False
 
             write_char = service.get_characteristic(self.write_uuid)
             notify_char = service.get_characteristic(self.notify_uuid)
 
             if not write_char or not notify_char:
+                _LOGGER.warning(
+                    "[%s] Required characteristics not found (write=%s, notify=%s)",
+                    self.device_address, write_char is not None, notify_char is not None,
+                )
                 return False
 
             self.write_characteristic = write_char
@@ -341,24 +366,41 @@ class FeederBLEProtocol:
                     self.supports_write_no_response = 'write-without-response' in props
 
             await self.client.start_notify(notify_char, self.notification_handler)
+            _LOGGER.debug("[%s] Connected and notifications started", self.device_address)
             return True
-        except Exception:
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Post-connect setup failed: %s", self.device_address, exc,
+            )
             return False
 
     async def disconnect(self):
         """Disconnect from the device"""
         if self.client and self.client.is_connected:
-            await self.client.stop_notify(self.notify_uuid)
+            _LOGGER.debug("[%s] Disconnecting", self.device_address)
+            try:
+                await self.client.stop_notify(self.notify_uuid)
+            except Exception as exc:
+                _LOGGER.debug(
+                    "[%s] Error stopping notifications during disconnect: %s",
+                    self.device_address, exc,
+                )
             await self.client.disconnect()
+            _LOGGER.debug("[%s] Disconnected", self.device_address)
+        else:
+            _LOGGER.debug("[%s] Disconnect called but not connected", self.device_address)
 
     async def send_verification_code(self, code: str = DEFAULT_VERIFICATION_CODE):
         """Send verification code to the device"""
         command = self.encode_command(CMD_SET_FAMILY_ID, length=4, action_hex=code)
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            _LOGGER.debug("[%s] Verification code sent", self.device_address)
             await asyncio.sleep(2)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to send verification code: %s", self.device_address, exc,
+            )
 
     async def query_name_version(self):
         """Query device name and firmware version (response via notification, command 00)."""
@@ -368,8 +410,10 @@ class FeederBLEProtocol:
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
             await asyncio.sleep(1.5)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to query name/version: %s", self.device_address, exc,
+            )
 
     async def send_sync_time(self, dt: Optional[datetime] = None):
         """Send current time to the device. Format: YY MM DD HH MM SS (6 bytes, year as 2 digits)."""
@@ -389,9 +433,12 @@ class FeederBLEProtocol:
         command = self.encode_command(CMD_SYNC_TIME, length=6, action_hex=action_bytes.hex().upper())
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            _LOGGER.debug("[%s] Time synced to %s", self.device_address, dt)
             await asyncio.sleep(1)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to sync time: %s", self.device_address, exc,
+            )
 
     async def query_fault(self):
         """Query fault status"""
@@ -401,8 +448,10 @@ class FeederBLEProtocol:
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
             await asyncio.sleep(1)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to query fault status: %s", self.device_address, exc,
+            )
 
     async def query_child_lock(self):
         """Query child lock status"""
@@ -412,8 +461,10 @@ class FeederBLEProtocol:
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
             await asyncio.sleep(1)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to query child lock: %s", self.device_address, exc,
+            )
 
     async def query_reminder_tone(self):
         """Query prompt sound / reminder tone status"""
@@ -423,8 +474,10 @@ class FeederBLEProtocol:
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
             await asyncio.sleep(1)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to query reminder tone: %s", self.device_address, exc,
+            )
 
     async def query_feeding_status(self):
         """Query feeding status"""
@@ -434,13 +487,26 @@ class FeederBLEProtocol:
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
             await asyncio.sleep(1)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to query feeding status: %s", self.device_address, exc,
+            )
 
     async def _ensure_connected(self) -> bool:
         """Ensure connection is still active"""
         if not self.client or not self.client.is_connected:
-            return await self.connect()
+            _LOGGER.info(
+                "[%s] Connection lost (client=%s, is_connected=%s), reconnecting",
+                self.device_address,
+                self.client is not None,
+                self.client.is_connected if self.client else "N/A",
+            )
+            result = await self.connect()
+            if not result:
+                _LOGGER.warning("[%s] Reconnection failed", self.device_address)
+            else:
+                _LOGGER.info("[%s] Reconnected successfully", self.device_address)
+            return result
 
         try:
             if hasattr(self.client, 'services'):
@@ -449,9 +515,21 @@ class FeederBLEProtocol:
                         await self.client.stop_notify(self.notify_uuid)
                         await asyncio.sleep(0.1)
                         await self.client.start_notify(self.notify_characteristic, self.notification_handler)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _LOGGER.debug(
+                            "[%s] Notification restart during ensure_connected: %s",
+                            self.device_address, exc,
+                        )
             return True
-        except Exception:
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Connection check failed (%s), reconnecting",
+                self.device_address, exc,
+            )
             await self.disconnect()
-            return await self.connect()
+            result = await self.connect()
+            if not result:
+                _LOGGER.warning("[%s] Reconnection after check failure failed", self.device_address)
+            else:
+                _LOGGER.info("[%s] Reconnected after check failure", self.device_address)
+            return result

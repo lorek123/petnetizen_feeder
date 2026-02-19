@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.2.9] - 2025-02-19
+
+### Added
+
+- Comprehensive logging throughout `protocol.py` and `feeder.py` to diagnose unavailability issues.
+- Protocol layer (`FeederBLEProtocol`): logs for BLE connect/disconnect, service discovery failures, characteristic lookup, notification received, verification code, all command writes, and `_ensure_connected` reconnection attempts.
+- Device layer (`FeederDevice`): logs for connect/disconnect, feed command lifecycle (sent, acknowledged, completed, timed out), schedule/child-lock/sound set/query, device info query, and missing responses.
+- Log levels: `DEBUG` for normal operations, `INFO` for connection state changes and successful actions, `WARNING` for failures and missing responses.
+
 ## [0.2.8] - 2025-02-01
 
 ### Changed
@@ -69,7 +78,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for standard, JK, and ALI device UUIDs.
 - PyPI-ready packaging with `pyproject.toml` and uv.
 
-[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.8...v0.2.9
+[0.2.8]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.4...v0.2.5
