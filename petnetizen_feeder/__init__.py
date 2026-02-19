@@ -37,5 +37,5 @@ Example usage:
 
 from .feeder import FeederDevice, FeedSchedule, Weekday, discover_feeders
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 __all__ = ["FeederDevice", "FeedSchedule", "Weekday", "discover_feeders"]

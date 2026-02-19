@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.3.1] - 2025-02-19
+
+### Fixed
+
+- Add 1-second GATT settling delay after BLE connect (both self-created and provided BleakClient paths) — prevents BlueZ from dropping the connection when `start_notify` fires too quickly.
+- Retry `start_notify` up to 3 times with 2-second backoff on failure, instead of aborting the entire setup on first failure.
+
 ## [0.3.0] - 2025-02-19
 
 ### Fixed
@@ -91,7 +98,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for standard, JK, and ALI device UUIDs.
 - PyPI-ready packaging with `pyproject.toml` and uv.
 
-[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.9...v0.3.0
 [0.2.9]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.7...v0.2.8

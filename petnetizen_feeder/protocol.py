@@ -324,12 +324,15 @@ class FeederBLEProtocol:
             self.client = BleakClient(self.device_address, timeout=timeout)
             try:
                 await self.client.connect()
-                await asyncio.sleep(0.5)
             except Exception as exc:
                 _LOGGER.warning(
                     "[%s] BLE connect failed: %s", self.device_address, exc,
                 )
                 return False
+
+        # Let the GATT layer settle before issuing operations — BlueZ can
+        # drop the connection if we start_notify too quickly after connect.
+        await asyncio.sleep(1.0)
 
         try:
             try:
@@ -369,9 +372,25 @@ class FeederBLEProtocol:
                     self.supports_write_response = 'write' in props or 'write-with-response' in props
                     self.supports_write_no_response = 'write-without-response' in props
 
-            await self.client.start_notify(notify_char, self.notification_handler)
-            _LOGGER.debug("[%s] Connected and notifications started", self.device_address)
-            return True
+            last_exc: Optional[Exception] = None
+            for attempt in range(3):
+                try:
+                    await self.client.start_notify(notify_char, self.notification_handler)
+                    _LOGGER.debug("[%s] Connected and notifications started", self.device_address)
+                    return True
+                except Exception as exc:
+                    last_exc = exc
+                    _LOGGER.debug(
+                        "[%s] start_notify attempt %d/3 failed: %s",
+                        self.device_address, attempt + 1, exc,
+                    )
+                    await asyncio.sleep(2.0)
+
+            _LOGGER.warning(
+                "[%s] Post-connect setup failed after 3 attempts: %s",
+                self.device_address, last_exc,
+            )
+            return False
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] Post-connect setup failed: %s", self.device_address, exc,
