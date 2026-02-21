@@ -317,11 +317,6 @@ class FeederBLEProtocol:
         if ble_client is not None:
             _LOGGER.debug("[%s] Using provided BleakClient", self.device_address)
             self.client = ble_client
-            # When a pre-connected client is provided the normal BleakClient.connect()
-            # latency (GATT service discovery, ~2-3 s) is absent.  Give the device a
-            # moment to settle before we write to the CCCD (start_notify), otherwise
-            # the firmware terminates the connection with HCI error 19.
-            await asyncio.sleep(1.5)
         else:
             _LOGGER.debug(
                 "[%s] Creating BleakClient (timeout=%ss)", self.device_address, timeout,
