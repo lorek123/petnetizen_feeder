@@ -35,7 +35,7 @@ Example usage:
     asyncio.run(main())
 """
 
-from .feeder import FeederDevice, FeedSchedule, Weekday, discover_feeders
+from .feeder import ConnectionFactory, FeederDevice, FeedSchedule, Weekday, discover_feeders
 
-__version__ = "0.3.8"
-__all__ = ["FeederDevice", "FeedSchedule", "Weekday", "discover_feeders"]
+__version__ = "0.4.0"
+__all__ = ["ConnectionFactory", "FeederDevice", "FeedSchedule", "Weekday", "discover_feeders"]

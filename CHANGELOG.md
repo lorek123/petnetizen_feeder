@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.4.0] - 2026-02-19
+
+### Added
+
+- `FeederDevice(connection_factory=...)`: optional async callable returning a connected `BleakClient`. When provided (e.g. from Home Assistant's `establish_connection`), all reconnection goes through the factory instead of creating a raw `BleakClient`. Standalone scripts that omit this parameter keep the existing direct-connection behaviour.
+- `FeederDevice.ensure_connected()`: public method that checks connectivity and reconnects via the factory (or directly) with proper verification. All library command methods now use this instead of the protocol-level `_ensure_connected`.
+- `FeederBLEProtocol._managed_connection` flag: when set by the factory path, the protocol never creates raw `BleakClient` instances on its own — it returns `False` and lets the higher-level code handle reconnection.
+
+### Changed
+
+- Bump minimum `bleak` requirement from `>=2.0.0` to `>=2.1.0` (aligns with Home Assistant 2026.1+ which requires bleak 2.1.0 for the `start_notify` BlueZ regression fix).
+
 ## [0.3.2] - 2025-02-19
 
 ### Changed
@@ -105,7 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for standard, JK, and ALI device UUIDs.
 - PyPI-ready packaging with `pyproject.toml` and uv.
 
-[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/lorek123/petnetizen_feeder/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/lorek123/petnetizen_feeder/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/lorek123/petnetizen_feeder/compare/v0.2.9...v0.3.0

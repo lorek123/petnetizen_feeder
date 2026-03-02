@@ -120,6 +120,7 @@ class FeederBLEProtocol:
     def __init__(self, device_address: str, device_type: Optional[str] = None):
         self.device_address = device_address
         self.device_type = device_type or detect_device_type()
+        self._managed_connection = False
 
         # Select UUIDs based on device type
         if self.device_type == "jk":
@@ -516,9 +517,22 @@ class FeederBLEProtocol:
             )
 
     async def _ensure_connected(self) -> bool:
-        """Ensure connection is still active."""
+        """Ensure connection is still active.
+
+        When ``_managed_connection`` is True (integration supplied a
+        connection factory), we never create a raw ``BleakClient`` here —
+        just report the drop and let the higher-level code reconnect via
+        the factory (which includes verification, adapter selection, etc.).
+        """
         if self.client and self.client.is_connected:
             return True
+
+        if self._managed_connection:
+            _LOGGER.debug(
+                "[%s] Connection lost (externally managed — not auto-reconnecting)",
+                self.device_address,
+            )
+            return False
 
         _LOGGER.info(
             "[%s] Connection lost, attempting reconnect",

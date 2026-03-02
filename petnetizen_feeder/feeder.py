@@ -6,6 +6,7 @@ Main library class for controlling feeder devices.
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any, List, Dict, Optional
 from .protocol import (
@@ -21,6 +22,8 @@ from .protocol import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+ConnectionFactory = Callable[[], Awaitable[Any]]
 
 # Weekday bitmask values (from FeedInfo.Companion.getWeekValue)
 WEEKDAY_BITMASK = {
@@ -106,6 +109,7 @@ class FeederDevice:
         address: str,
         verification_code: str = DEFAULT_VERIFICATION_CODE,
         device_type: Optional[str] = None,
+        connection_factory: Optional[ConnectionFactory] = None,
     ):
         """
         Initialize feeder device controller.
@@ -114,11 +118,19 @@ class FeederDevice:
             address: BLE device address (e.g., "E6:C0:07:09:A3:D3")
             verification_code: Verification code (default: "00000000")
             device_type: Optional "standard", "jk", or "ali" (auto-detected from name if not set)
+            connection_factory: Optional async callable returning a connected BleakClient.
+                When provided (e.g. from Home Assistant via ``establish_connection``),
+                reconnection uses this factory instead of creating a raw ``BleakClient``.
+                Standalone scripts can omit this to use the built-in connection logic.
         """
         self.address = address
         self.verification_code = verification_code
+        self._connection_factory = connection_factory
         self._protocol = FeederBLEProtocol(address, device_type=device_type)
+        if connection_factory is not None:
+            self._protocol._managed_connection = True
         self._connected = False
+        self._reconnect_lock = asyncio.Lock()
 
     async def connect(self, ble_client: Optional[Any] = None) -> bool:
         """
@@ -168,6 +180,39 @@ class FeederDevice:
         self._connected = False
         _LOGGER.info("Disconnected from feeder %s", self.address)
 
+    async def ensure_connected(self) -> bool:
+        """Ensure the device is connected, attempting reconnection if needed.
+
+        When a ``connection_factory`` was supplied at init time (e.g. from
+        Home Assistant's ``establish_connection``), reconnection uses it to
+        obtain a fresh, adapter-managed ``BleakClient``.  Otherwise falls
+        back to a direct ``BleakClient`` connection (standalone mode).
+
+        Returns ``False`` (without raising) when reconnection fails so the
+        caller can decide how to handle it.
+        """
+        if self.is_connected:
+            return True
+        if not self._connected:
+            return False
+
+        async with self._reconnect_lock:
+            if self.is_connected:
+                return True
+            _LOGGER.info("Feeder %s disconnected, attempting reconnect", self.address)
+            try:
+                if self._connection_factory:
+                    ble_client = await self._connection_factory()
+                    ok = await self.reconnect(ble_client=ble_client)
+                else:
+                    ok = await self.reconnect()
+                return ok
+            except Exception as exc:
+                _LOGGER.warning(
+                    "Reconnection to feeder %s failed: %s", self.address, exc,
+                )
+                return False
+
     async def feed(self, portions: int = 1, *, fast: bool = True) -> bool:
         """
         Trigger manual feed with specified number of portions.
@@ -186,7 +231,7 @@ class FeederDevice:
         if not self._connected:
             raise RuntimeError("Not connected to device. Call connect() first.")
 
-        if not await self._protocol._ensure_connected():
+        if not await self.ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
 
         _LOGGER.debug("Feeding %d portion(s) (fast=%s)", portions, fast)
@@ -255,7 +300,7 @@ class FeederDevice:
         if not self._connected:
             raise RuntimeError("Not connected to device. Call connect() first.")
 
-        if not await self._protocol._ensure_connected():
+        if not await self.ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
 
         _LOGGER.debug("Setting schedule with %d slot(s)", len(schedules))
@@ -296,7 +341,7 @@ class FeederDevice:
         if not self._connected:
             raise RuntimeError("Not connected to device. Call connect() first.")
 
-        if not await self._protocol._ensure_connected():
+        if not await self.ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
 
         _LOGGER.debug("Setting child lock to %s", locked)
@@ -330,7 +375,7 @@ class FeederDevice:
         if not self._connected:
             raise RuntimeError("Not connected to device. Call connect() first.")
 
-        if not await self._protocol._ensure_connected():
+        if not await self.ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
 
         _LOGGER.debug("Setting sound to %s", enabled)
@@ -361,7 +406,7 @@ class FeederDevice:
         if not self._connected:
             raise RuntimeError("Not connected to device. Call connect() first.")
 
-        if not await self._protocol._ensure_connected():
+        if not await self.ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
 
         _LOGGER.debug("Querying schedule")
@@ -413,7 +458,7 @@ class FeederDevice:
         """
         if not self._connected:
             raise RuntimeError("Not connected to device. Call connect() first.")
-        if not await self._protocol._ensure_connected():
+        if not await self.ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
         _LOGGER.debug("Querying device info")
         self._protocol.clear_notifications()
@@ -444,7 +489,7 @@ class FeederDevice:
         """
         if not self._connected:
             raise RuntimeError("Not connected to device. Call connect() first.")
-        if not await self._protocol._ensure_connected():
+        if not await self.ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
         _LOGGER.debug("Querying child lock status")
         self._protocol.clear_notifications()
@@ -469,7 +514,7 @@ class FeederDevice:
         """
         if not self._connected:
             raise RuntimeError("Not connected to device. Call connect() first.")
-        if not await self._protocol._ensure_connected():
+        if not await self.ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
         _LOGGER.debug("Querying prompt sound status")
         self._protocol.clear_notifications()
