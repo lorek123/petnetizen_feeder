@@ -37,5 +37,5 @@ Example usage:
 
 from .feeder import ConnectionFactory, FeederDevice, FeedSchedule, Weekday, discover_feeders
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 __all__ = ["ConnectionFactory", "FeederDevice", "FeedSchedule", "Weekday", "discover_feeders"]

@@ -372,12 +372,35 @@ class FeederBLEProtocol:
                     self.supports_write_response = 'write' in props or 'write-with-response' in props
                     self.supports_write_no_response = 'write-without-response' in props
 
-            # start_notify immediately — the device requires this before any writes
-            # (including the verification code). Sending writes first causes the device
-            # to disconnect with HCI error 19 on the subsequent start_notify CCCD write.
-            await self.client.start_notify(notify_char, self.notification_handler)
-            _LOGGER.debug("[%s] Connected and notifications started", self.device_address)
-            return True
+            # start_notify before any writes — the device requires the CCCD
+            # subscription first; sending writes before start_notify causes
+            # Error 19.  Through a BLE proxy the CCCD write is timing-
+            # sensitive, so we retry with backoff.
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
+                if not self.client.is_connected:
+                    _LOGGER.warning(
+                        "[%s] Device disconnected before start_notify (attempt %d)",
+                        self.device_address, attempt,
+                    )
+                    return False
+                try:
+                    if attempt > 1:
+                        await asyncio.sleep(2.0)
+                    await self.client.start_notify(notify_char, self.notification_handler)
+                    _LOGGER.debug(
+                        "[%s] Connected and notifications started (attempt %d/%d)",
+                        self.device_address, attempt, max_attempts,
+                    )
+                    return True
+                except Exception as exc:
+                    _LOGGER.warning(
+                        "[%s] start_notify failed (attempt %d/%d): %s",
+                        self.device_address, attempt, max_attempts, exc,
+                    )
+                    if attempt == max_attempts:
+                        return False
+            return False
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] Post-connect setup failed: %s", self.device_address, exc,
