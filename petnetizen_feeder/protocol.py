@@ -313,6 +313,30 @@ class FeederBLEProtocol:
         )
         self.received_data.append(data)
 
+    async def _request_mtu(self, desired_mtu: int = 512) -> int:
+        """Request an MTU exchange, mirroring the Android app's requestMtu(512).
+
+        Tries the backend-specific ``request_mtu`` when available (e.g. the
+        ESPHome BLE proxy exposes it).  Falls back to reading the current
+        ``mtu_size`` property, which is always safe.
+        """
+        try:
+            backend = getattr(self.client, "_backend", None)
+            if backend and hasattr(backend, "request_mtu"):
+                mtu = await backend.request_mtu(desired_mtu)
+                return mtu if isinstance(mtu, int) else getattr(self.client, "mtu_size", 23)
+
+            if hasattr(self.client, "request_mtu"):
+                mtu = await self.client.request_mtu(desired_mtu)
+                return mtu if isinstance(mtu, int) else getattr(self.client, "mtu_size", 23)
+
+            return getattr(self.client, "mtu_size", 23)
+        except Exception as exc:
+            _LOGGER.debug(
+                "[%s] MTU exchange failed (non-fatal): %s", self.device_address, exc,
+            )
+            return getattr(self.client, "mtu_size", 23)
+
     async def connect(self, timeout: float = 10.0, ble_client: Optional[BleakClient] = None) -> bool:
         """Connect to the device. If ble_client is provided (e.g. from bleak_retry_connector), use it."""
         if ble_client is not None:
@@ -372,10 +396,15 @@ class FeederBLEProtocol:
                     self.supports_write_response = 'write' in props or 'write-with-response' in props
                     self.supports_write_no_response = 'write-without-response' in props
 
-            # start_notify before any writes — the device requires the CCCD
-            # subscription first; sending writes before start_notify causes
-            # Error 19.  Through a BLE proxy the CCCD write is timing-
-            # sensitive, so we retry with backoff.
+            # The official Android app (Nordic BLE Manager) requests MTU 512
+            # before enabling notifications.  The MTU exchange is a GATT
+            # round-trip that confirms the link is ready; without it the
+            # subsequent CCCD write for start_notify can hit the feeder
+            # before its BLE stack is prepared, causing Error 19 —
+            # especially through an ESP32 BLE proxy.
+            mtu = await self._request_mtu(512)
+            _LOGGER.debug("[%s] MTU: %d", self.device_address, mtu)
+
             max_attempts = 3
             for attempt in range(1, max_attempts + 1):
                 if not self.client.is_connected:
