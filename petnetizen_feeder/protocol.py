@@ -7,10 +7,9 @@ This module handles the Tuya BLE protocol encoding/decoding and device communica
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, List, Tuple
 from bleak import BleakClient, BleakScanner
 from bleak.backends.characteristic import BleakGATTCharacteristic
-from bleak.backends.device import BLEDevice
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +49,9 @@ CMD_AUTO_LOCK = "10"
 CMD_QUERY_FEEDER_PLAN = "11"
 CMD_REMINDER_TONE = "12"
 CMD_ATMOSPHERE_LIGHT = "13"
+CMD_DO_NOT_DISTURB_STATUS = "17"
+CMD_DO_NOT_DISTURB = "18"
+CMD_LONG_RING = "19"
 
 
 # Service UUIDs for connection (per device type)
@@ -142,6 +144,7 @@ class FeederBLEProtocol:
         self.notify_characteristic = None
         self.supports_write_response = False
         self.supports_write_no_response = True
+        self.last_feed_result: Optional[dict] = None
 
     def hex_string_to_bytes(self, hex_string: str) -> bytes:
         """Convert hex string to bytes"""
@@ -151,8 +154,9 @@ class FeederBLEProtocol:
         """Convert bytes to hex string"""
         return data.hex().upper()
 
-    def encode_command(self, command: str, length: Optional[int] = None,
-                      action_hex: str = "") -> bytes:
+    def encode_command(
+        self, command: str, length: Optional[int] = None, action_hex: str = ""
+    ) -> bytes:
         """
         Encode a command according to Tuya BLE protocol.
 
@@ -181,10 +185,7 @@ class FeederBLEProtocol:
         if len(data) < 4:
             return {"error": "Data too short"}
 
-        result = {
-            "raw": self.bytes_to_hex_string(data),
-            "raw_bytes": data
-        }
+        result = {"raw": self.bytes_to_hex_string(data), "raw_bytes": data}
 
         try:
             header = data[0]
@@ -195,13 +196,29 @@ class FeederBLEProtocol:
             result["command"] = command_hex
 
             command_map = {
-                "00": "NAME_AND_VERSION", "01": "SET_NAME", "02": "RESTORE_FACTORY",
-                "03": "HEARTBEAT", "04": "QUERY_MAC", "05": "SYNC_TIME",
-                "06": "SET_FAMILY_ID", "07": "SET_FEEDER_PLAN", "08": "FEEDING",
-                "09": "FEEDING_STATUS", "0A": "FAULT", "0B": "PLAN_FEED_RESULT",
-                "0C": "MANUAL_FEED_RESULT", "0D": "CHILD_LOCK", "0E": "POWER_SUPPLY_METHOD",
-                "0F": "CONTROL_LED", "10": "AUTO_LOCK", "11": "QUERY_FEEDER_PLAN",
-                "12": "REMINDER_TONE", "13": "ATMOSPHERE_LIGHT",
+                "00": "NAME_AND_VERSION",
+                "01": "SET_NAME",
+                "02": "RESTORE_FACTORY",
+                "03": "HEARTBEAT",
+                "04": "QUERY_MAC",
+                "05": "SYNC_TIME",
+                "06": "SET_FAMILY_ID",
+                "07": "SET_FEEDER_PLAN",
+                "08": "FEEDING",
+                "09": "FEEDING_STATUS",
+                "0A": "FAULT",
+                "0B": "PLAN_FEED_RESULT",
+                "0C": "MANUAL_FEED_RESULT",
+                "0D": "CHILD_LOCK",
+                "0E": "POWER_SUPPLY_METHOD",
+                "0F": "CONTROL_LED",
+                "10": "AUTO_LOCK",
+                "11": "QUERY_FEEDER_PLAN",
+                "12": "REMINDER_TONE",
+                "13": "ATMOSPHERE_LIGHT",
+                "17": "DO_NOT_DISTURB_STATUS",
+                "18": "DO_NOT_DISTURB",
+                "19": "LONG_RING",
             }
             result["command_name"] = command_map.get(command_hex, "UNKNOWN")
 
@@ -222,11 +239,21 @@ class FeederBLEProtocol:
                 # Parse specific commands
                 if command_hex == "00" and len(data_section) >= 12:
                     try:
-                        name = data_section[:12].decode('utf-8', errors='ignore').strip('\x00').strip()
+                        name = (
+                            data_section[:12]
+                            .decode("utf-8", errors="ignore")
+                            .strip("\x00")
+                            .strip()
+                        )
                         if name:
                             result["device_name"] = name
                         if len(data_section) > 12:
-                            version = data_section[12:].decode('utf-8', errors='ignore').strip('\x00').strip()
+                            version = (
+                                data_section[12:]
+                                .decode("utf-8", errors="ignore")
+                                .strip("\x00")
+                                .strip()
+                            )
                             if version:
                                 result["device_version"] = version
                     except Exception:
@@ -234,20 +261,44 @@ class FeederBLEProtocol:
                 elif command_hex == "0A" and len(data_section) >= 1:
                     result["fault_code"] = data_section[0]
                 elif command_hex == "0E" and len(data_section) >= 1:
-                    result["power_mode"] = "Battery" if data_section[0] == 0 else "DC Power"
+                    result["power_mode"] = (
+                        "Battery" if data_section[0] == 0 else "DC Power"
+                    )
                 elif command_hex == "09" and len(data_section) >= 1:
                     status_map = {0: "Idle", 1: "Feeding", 2: "Error"}
                     result["feeding_status"] = data_section[0]
-                    result["feeding_status_text"] = status_map.get(data_section[0], f"Unknown({data_section[0]})")
+                    result["feeding_status_text"] = status_map.get(
+                        data_section[0], f"Unknown({data_section[0]})"
+                    )
                 elif command_hex == "0D" and len(data_section) >= 1:
                     result["child_lock"] = data_section[0]
-                    result["child_lock_text"] = "LOCKED" if data_section[0] == 1 else "UNLOCKED"
+                    result["child_lock_text"] = (
+                        "LOCKED" if data_section[0] == 1 else "UNLOCKED"
+                    )
+                elif command_hex == "0F" and len(data_section) >= 1:
+                    result["led"] = bool(data_section[0])
+                elif command_hex == "10" and len(data_section) >= 1:
+                    result["auto_lock"] = bool(data_section[0])
                 elif command_hex == "12" and len(data_section) >= 1:
                     result["prompt_sound"] = data_section[0]
-                    result["prompt_sound_text"] = "ON" if data_section[0] == 1 else "OFF"
+                    result["prompt_sound_text"] = (
+                        "ON" if data_section[0] == 1 else "OFF"
+                    )
+                elif command_hex == "13" and len(data_section) >= 1:
+                    result["atmosphere_light"] = bool(data_section[0])
+                elif command_hex in ("17", "18") and len(data_section) >= 5:
+                    result["do_not_disturb"] = bool(data_section[0])
+                    result["dnd_start"] = f"{data_section[1]:02d}:{data_section[2]:02d}"
+                    result["dnd_end"] = f"{data_section[3]:02d}:{data_section[4]:02d}"
+                elif command_hex == "19" and len(data_section) >= 1:
+                    result["long_ring"] = bool(data_section[0])
                 elif command_hex == "08" and len(data_section) >= 1:
                     result["feed_response"] = data_section[0]
-                    result["feed_response_text"] = "Triggered" if data_section[0] == 1 else f"Status({data_section[0]})"
+                    result["feed_response_text"] = (
+                        "Triggered"
+                        if data_section[0] == 1
+                        else f"Status({data_section[0]})"
+                    )
                 elif command_hex == "0C" and len(data_section) >= 9:
                     # Parse feed records (9 bytes each)
                     feed_records = []
@@ -255,14 +306,24 @@ class FeederBLEProtocol:
                     for i in range(num_records):
                         offset = i * 9
                         if offset + 9 <= len(data_section):
-                            record = data_section[offset:offset+9]
+                            record = data_section[offset : offset + 9]
                             timestamp = f"20{record[0]:02d}-{record[1]:02d}-{record[2]:02d} {record[3]:02d}:{record[4]:02d}:{record[5]:02d}"
-                            feed_records.append({
-                                "timestamp": timestamp,
-                                "portions": record[6],
-                                "feed_type": "Manual" if record[7] == 1 else "Plan" if record[7] == 2 else f"Unknown({record[7]})",
-                                "status": "Success" if record[8] == 0 else "Failed" if record[8] == 1 else f"Unknown({record[8]})"
-                            })
+                            feed_records.append(
+                                {
+                                    "timestamp": timestamp,
+                                    "portions": record[6],
+                                    "feed_type": "Manual"
+                                    if record[7] == 1
+                                    else "Plan"
+                                    if record[7] == 2
+                                    else f"Unknown({record[7]})",
+                                    "status": "Success"
+                                    if record[8] == 0
+                                    else "Failed"
+                                    if record[8] == 1
+                                    else f"Unknown({record[8]})",
+                                }
+                            )
                     if feed_records:
                         result["feed_records"] = feed_records
                 elif command_hex == "06" and len(data_section) >= 1:
@@ -279,20 +340,30 @@ class FeederBLEProtocol:
                         if len(data_section) >= 1 + 5 * n:
                             offset = 1
                     while offset + 5 <= len(data_section):
-                        week_val, hour, minute, portions, enabled = data_section[offset : offset + 5]
+                        week_val, hour, minute, portions, enabled = data_section[
+                            offset : offset + 5
+                        ]
                         weekdays = [
-                            d for bit, d in [
-                                (1, "sun"), (2, "mon"), (4, "tue"), (8, "wed"),
-                                (16, "thu"), (32, "fri"), (64, "sat"),
+                            d
+                            for bit, d in [
+                                (1, "sun"),
+                                (2, "mon"),
+                                (4, "tue"),
+                                (8, "wed"),
+                                (16, "thu"),
+                                (32, "fri"),
+                                (64, "sat"),
                             ]
                             if week_val & bit
                         ]
-                        slots.append({
-                            "weekdays": weekdays,
-                            "time": f"{hour:02d}:{minute:02d}",
-                            "portions": portions,
-                            "enabled": bool(enabled),
-                        })
+                        slots.append(
+                            {
+                                "weekdays": weekdays,
+                                "time": f"{hour:02d}:{minute:02d}",
+                                "portions": portions,
+                                "enabled": bool(enabled),
+                            }
+                        )
                         offset += 5
                     if slots:
                         result["feed_plan_slots"] = slots
@@ -309,9 +380,16 @@ class FeederBLEProtocol:
         """Handle notifications from the device"""
         _LOGGER.debug(
             "[%s] Notification received: %s (%d bytes)",
-            self.device_address, data.hex().upper(), len(data),
+            self.device_address,
+            data.hex().upper(),
+            len(data),
         )
         self.received_data.append(data)
+        # Track last completed manual feed result inline so it's always current
+        if len(data) >= 2 and f"{data[1]:02X}" == "0C":
+            decoded = self.decode_notification(data)
+            if decoded.get("feed_records"):
+                self.last_feed_result = decoded["feed_records"][-1]
 
     async def _request_mtu(self, desired_mtu: int = 512) -> int:
         """Request an MTU exchange, mirroring the Android app's requestMtu(512).
@@ -324,34 +402,50 @@ class FeederBLEProtocol:
             backend = getattr(self.client, "_backend", None)
             if backend and hasattr(backend, "request_mtu"):
                 mtu = await backend.request_mtu(desired_mtu)
-                return mtu if isinstance(mtu, int) else getattr(self.client, "mtu_size", 23)
+                return (
+                    mtu
+                    if isinstance(mtu, int)
+                    else getattr(self.client, "mtu_size", 23)
+                )
 
             if hasattr(self.client, "request_mtu"):
                 mtu = await self.client.request_mtu(desired_mtu)
-                return mtu if isinstance(mtu, int) else getattr(self.client, "mtu_size", 23)
+                return (
+                    mtu
+                    if isinstance(mtu, int)
+                    else getattr(self.client, "mtu_size", 23)
+                )
 
             return getattr(self.client, "mtu_size", 23)
         except Exception as exc:
             _LOGGER.debug(
-                "[%s] MTU exchange failed (non-fatal): %s", self.device_address, exc,
+                "[%s] MTU exchange failed (non-fatal): %s",
+                self.device_address,
+                exc,
             )
             return getattr(self.client, "mtu_size", 23)
 
-    async def connect(self, timeout: float = 10.0, ble_client: Optional[BleakClient] = None) -> bool:
+    async def connect(
+        self, timeout: float = 10.0, ble_client: Optional[BleakClient] = None
+    ) -> bool:
         """Connect to the device. If ble_client is provided (e.g. from bleak_retry_connector), use it."""
         if ble_client is not None:
             _LOGGER.debug("[%s] Using provided BleakClient", self.device_address)
             self.client = ble_client
         else:
             _LOGGER.debug(
-                "[%s] Creating BleakClient (timeout=%ss)", self.device_address, timeout,
+                "[%s] Creating BleakClient (timeout=%ss)",
+                self.device_address,
+                timeout,
             )
             self.client = BleakClient(self.device_address, timeout=timeout)
             try:
                 await self.client.connect()
             except Exception as exc:
                 _LOGGER.warning(
-                    "[%s] BLE connect failed: %s", self.device_address, exc,
+                    "[%s] BLE connect failed: %s",
+                    self.device_address,
+                    exc,
                 )
                 return False
 
@@ -361,10 +455,14 @@ class FeederBLEProtocol:
         try:
             services = self.client.services
             if services is None:
-                raise RuntimeError("Service discovery not complete – no services available")
+                raise RuntimeError(
+                    "Service discovery not complete – no services available"
+                )
         except Exception as exc:
             _LOGGER.warning(
-                "[%s] Service discovery failed: %s", self.device_address, exc,
+                "[%s] Service discovery failed: %s",
+                self.device_address,
+                exc,
             )
             return False
 
@@ -373,7 +471,8 @@ class FeederBLEProtocol:
             if not service:
                 _LOGGER.warning(
                     "[%s] Service %s not found on device",
-                    self.device_address, self.service_uuid,
+                    self.device_address,
+                    self.service_uuid,
                 )
                 return False
 
@@ -383,18 +482,22 @@ class FeederBLEProtocol:
             if not write_char or not notify_char:
                 _LOGGER.warning(
                     "[%s] Required characteristics not found (write=%s, notify=%s)",
-                    self.device_address, write_char is not None, notify_char is not None,
+                    self.device_address,
+                    write_char is not None,
+                    notify_char is not None,
                 )
                 return False
 
             self.write_characteristic = write_char
             self.notify_characteristic = notify_char
 
-            if hasattr(write_char, 'properties'):
+            if hasattr(write_char, "properties"):
                 props = write_char.properties
                 if isinstance(props, list):
-                    self.supports_write_response = 'write' in props or 'write-with-response' in props
-                    self.supports_write_no_response = 'write-without-response' in props
+                    self.supports_write_response = (
+                        "write" in props or "write-with-response" in props
+                    )
+                    self.supports_write_no_response = "write-without-response" in props
 
             # The official Android app (Nordic BLE Manager) requests MTU 512
             # before enabling notifications.  The MTU exchange is a GATT
@@ -410,31 +513,143 @@ class FeederBLEProtocol:
                 if not self.client.is_connected:
                     _LOGGER.warning(
                         "[%s] Device disconnected before start_notify (attempt %d)",
-                        self.device_address, attempt,
+                        self.device_address,
+                        attempt,
                     )
                     return False
                 try:
                     if attempt > 1:
                         await asyncio.sleep(2.0)
-                    await self.client.start_notify(notify_char, self.notification_handler)
+                    await self.client.start_notify(
+                        notify_char, self.notification_handler
+                    )
                     _LOGGER.debug(
                         "[%s] Connected and notifications started (attempt %d/%d)",
-                        self.device_address, attempt, max_attempts,
+                        self.device_address,
+                        attempt,
+                        max_attempts,
                     )
                     return True
                 except Exception as exc:
                     _LOGGER.warning(
                         "[%s] start_notify failed (attempt %d/%d): %s",
-                        self.device_address, attempt, max_attempts, exc,
+                        self.device_address,
+                        attempt,
+                        max_attempts,
+                        exc,
                     )
                     if attempt == max_attempts:
                         return False
             return False
         except Exception as exc:
             _LOGGER.warning(
-                "[%s] Post-connect setup failed: %s", self.device_address, exc,
+                "[%s] Post-connect setup failed: %s",
+                self.device_address,
+                exc,
             )
             return False
+
+    async def set_led(self, enabled: bool):
+        """Set LED on/off."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(
+            CMD_CONTROL_LED, length=1, action_hex="01" if enabled else "00"
+        )
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(0.5)
+        except Exception as exc:
+            _LOGGER.warning("[%s] Failed to set LED: %s", self.device_address, exc)
+
+    async def set_auto_lock(self, enabled: bool):
+        """Set auto lock on/off."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(
+            CMD_AUTO_LOCK, length=1, action_hex="01" if enabled else "00"
+        )
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(0.5)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to set auto lock: %s", self.device_address, exc
+            )
+
+    async def set_atmosphere_light(self, enabled: bool):
+        """Set atmosphere light on/off."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(
+            CMD_ATMOSPHERE_LIGHT, length=1, action_hex="01" if enabled else "00"
+        )
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(0.5)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to set atmosphere light: %s", self.device_address, exc
+            )
+
+    async def factory_reset(self):
+        """Send factory reset command."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(CMD_RESTORE_FACTORY, length=1, action_hex="01")
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(1.0)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to send factory reset: %s", self.device_address, exc
+            )
+
+    async def query_do_not_disturb(self):
+        """Query do-not-disturb status."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(CMD_DO_NOT_DISTURB_STATUS, length=0)
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(1.0)
+        except Exception as exc:
+            _LOGGER.warning("[%s] Failed to query DND: %s", self.device_address, exc)
+
+    async def set_do_not_disturb(
+        self, enabled: bool, start_time: str = "22:00", end_time: str = "08:00"
+    ):
+        """Set do-not-disturb. start_time/end_time in 'HH:MM' format."""
+        if not await self._ensure_connected():
+            return
+        try:
+            sh, sm = (int(x) for x in start_time.split(":"))
+            eh, em = (int(x) for x in end_time.split(":"))
+        except (ValueError, AttributeError):
+            _LOGGER.warning("[%s] Invalid DND time format", self.device_address)
+            return
+        action = f"{'01' if enabled else '00'}{sh:02X}{sm:02X}{eh:02X}{em:02X}"
+        command = self.encode_command(CMD_DO_NOT_DISTURB, length=5, action_hex=action)
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(0.5)
+        except Exception as exc:
+            _LOGGER.warning("[%s] Failed to set DND: %s", self.device_address, exc)
+
+    async def set_long_ring(self, enabled: bool):
+        """Set long ring / extended sound on/off."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(
+            CMD_LONG_RING, length=1, action_hex="01" if enabled else "00"
+        )
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(0.5)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to set long ring: %s", self.device_address, exc
+            )
 
     async def disconnect(self):
         """Disconnect from the device"""
@@ -445,12 +660,15 @@ class FeederBLEProtocol:
             except Exception as exc:
                 _LOGGER.debug(
                     "[%s] Error stopping notifications during disconnect: %s",
-                    self.device_address, exc,
+                    self.device_address,
+                    exc,
                 )
             await self.client.disconnect()
             _LOGGER.debug("[%s] Disconnected", self.device_address)
         else:
-            _LOGGER.debug("[%s] Disconnect called but not connected", self.device_address)
+            _LOGGER.debug(
+                "[%s] Disconnect called but not connected", self.device_address
+            )
 
     async def replace_client(self, ble_client: BleakClient) -> bool:
         """Replace BleakClient with a freshly connected one (for integration-level reconnection)."""
@@ -475,7 +693,9 @@ class FeederBLEProtocol:
             await asyncio.sleep(2)
         except Exception as exc:
             _LOGGER.warning(
-                "[%s] Failed to send verification code: %s", self.device_address, exc,
+                "[%s] Failed to send verification code: %s",
+                self.device_address,
+                exc,
             )
 
     async def query_name_version(self):
@@ -488,7 +708,9 @@ class FeederBLEProtocol:
             await asyncio.sleep(1.5)
         except Exception as exc:
             _LOGGER.warning(
-                "[%s] Failed to query name/version: %s", self.device_address, exc,
+                "[%s] Failed to query name/version: %s",
+                self.device_address,
+                exc,
             )
 
     async def send_sync_time(self, dt: Optional[datetime] = None):
@@ -498,22 +720,28 @@ class FeederBLEProtocol:
         if dt is None:
             dt = datetime.now()
         # 6 bytes: year%100, month, day, hour, minute, second
-        action_bytes = bytes([
-            dt.year % 100,
-            dt.month,
-            dt.day,
-            dt.hour,
-            dt.minute,
-            dt.second,
-        ])
-        command = self.encode_command(CMD_SYNC_TIME, length=6, action_hex=action_bytes.hex().upper())
+        action_bytes = bytes(
+            [
+                dt.year % 100,
+                dt.month,
+                dt.day,
+                dt.hour,
+                dt.minute,
+                dt.second,
+            ]
+        )
+        command = self.encode_command(
+            CMD_SYNC_TIME, length=6, action_hex=action_bytes.hex().upper()
+        )
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
             _LOGGER.debug("[%s] Time synced to %s", self.device_address, dt)
             await asyncio.sleep(1)
         except Exception as exc:
             _LOGGER.warning(
-                "[%s] Failed to sync time: %s", self.device_address, exc,
+                "[%s] Failed to sync time: %s",
+                self.device_address,
+                exc,
             )
 
     async def query_fault(self):
@@ -526,7 +754,9 @@ class FeederBLEProtocol:
             await asyncio.sleep(1)
         except Exception as exc:
             _LOGGER.warning(
-                "[%s] Failed to query fault status: %s", self.device_address, exc,
+                "[%s] Failed to query fault status: %s",
+                self.device_address,
+                exc,
             )
 
     async def query_child_lock(self):
@@ -539,7 +769,9 @@ class FeederBLEProtocol:
             await asyncio.sleep(1)
         except Exception as exc:
             _LOGGER.warning(
-                "[%s] Failed to query child lock: %s", self.device_address, exc,
+                "[%s] Failed to query child lock: %s",
+                self.device_address,
+                exc,
             )
 
     async def query_reminder_tone(self):
@@ -552,7 +784,9 @@ class FeederBLEProtocol:
             await asyncio.sleep(1)
         except Exception as exc:
             _LOGGER.warning(
-                "[%s] Failed to query reminder tone: %s", self.device_address, exc,
+                "[%s] Failed to query reminder tone: %s",
+                self.device_address,
+                exc,
             )
 
     async def query_feeding_status(self):
@@ -565,7 +799,9 @@ class FeederBLEProtocol:
             await asyncio.sleep(1)
         except Exception as exc:
             _LOGGER.warning(
-                "[%s] Failed to query feeding status: %s", self.device_address, exc,
+                "[%s] Failed to query feeding status: %s",
+                self.device_address,
+                exc,
             )
 
     async def _ensure_connected(self) -> bool:

@@ -11,13 +11,12 @@ from datetime import datetime
 from typing import Any, List, Dict, Optional
 from .protocol import (
     FeederBLEProtocol,
-    discover_feeders,
+    discover_feeders,  # noqa: F401 (re-exported via __init__)
     CMD_FEEDING,
     CMD_SET_FEEDER_PLAN,
     CMD_CHILD_LOCK,
     CMD_REMINDER_TONE,
     CMD_QUERY_FEEDER_PLAN,
-    CMD_QUERY_NAME_VERSION,
     DEFAULT_VERIFICATION_CODE,
 )
 
@@ -39,6 +38,7 @@ WEEKDAY_BITMASK = {
 
 class Weekday:
     """Weekday constants for schedule"""
+
     SUNDAY = "sun"
     MONDAY = "mon"
     TUESDAY = "tue"
@@ -55,7 +55,9 @@ class Weekday:
 class FeedSchedule:
     """Represents a single feed schedule entry"""
 
-    def __init__(self, weekdays: List[str], time: str, portions: int, enabled: bool = True):
+    def __init__(
+        self, weekdays: List[str], time: str, portions: int, enabled: bool = True
+    ):
         """
         Args:
             weekdays: List of weekday names (e.g., ["mon", "wed", "fri"])
@@ -81,13 +83,9 @@ class FeedSchedule:
         hour, minute = map(int, self.time.split(":"))
 
         # Format: week(1 hex) + hour(1 hex) + minute(1 hex) + count(1 hex) + enabled(1 hex)
-        return bytes([
-            week_value,
-            hour,
-            minute,
-            self.portions,
-            1 if self.enabled else 0
-        ])
+        return bytes(
+            [week_value, hour, minute, self.portions, 1 if self.enabled else 0]
+        )
 
 
 class FeederDevice:
@@ -202,6 +200,10 @@ class FeederDevice:
             _LOGGER.info("Feeder %s disconnected, attempting reconnect", self.address)
             try:
                 if self._connection_factory:
+                    # Release the stale connection slot on the proxy BEFORE
+                    # opening a new one.  Without this the ESP32 proxy leaks
+                    # slots (max ~3) until it's completely stuck.
+                    await self._release_stale_connection()
                     ble_client = await self._connection_factory()
                     ok = await self.reconnect(ble_client=ble_client)
                 else:
@@ -209,9 +211,36 @@ class FeederDevice:
                 return ok
             except Exception as exc:
                 _LOGGER.warning(
-                    "Reconnection to feeder %s failed: %s", self.address, exc,
+                    "Reconnection to feeder %s failed: %s",
+                    self.address,
+                    exc,
                 )
                 return False
+
+    async def _release_stale_connection(self) -> None:
+        """Tell the BLE proxy to release any stale connection to this device.
+
+        Even when the BLE link is dead (``is_connected`` is False), the
+        proxy (e.g. ESP32 via ESPHome) may still hold the connection slot.
+        Calling ``disconnect()`` on the old client sends an explicit
+        disconnect request to the proxy so it can free the slot before we
+        open a new one.
+        """
+        client = self._protocol.client
+        if client is None:
+            return
+        try:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            _LOGGER.debug(
+                "Released stale BLE connection for %s",
+                self.address,
+            )
+        finally:
+            self._protocol.client = None
+        await asyncio.sleep(2.0)
 
     async def feed(self, portions: int = 1, *, fast: bool = True) -> bool:
         """
@@ -244,7 +273,9 @@ class FeederDevice:
             await self._protocol.query_feeding_status()
             await asyncio.sleep(0.5)
 
-        command = self._protocol.encode_command(CMD_FEEDING, length=1, action_hex=f"{portions:02X}")
+        command = self._protocol.encode_command(
+            CMD_FEEDING, length=1, action_hex=f"{portions:02X}"
+        )
 
         self._protocol.clear_notifications()
         notification_count_before = len(self._protocol.received_data)
@@ -259,7 +290,9 @@ class FeederDevice:
             for _ in range(40):  # Wait up to 10 seconds
                 await asyncio.sleep(0.25)
                 if len(self._protocol.received_data) > notification_count_before:
-                    new_notifications = self._protocol.received_data[notification_count_before:]
+                    new_notifications = self._protocol.received_data[
+                        notification_count_before:
+                    ]
                     for data in new_notifications:
                         decoded = self._protocol.decode_notification(data)
                         cmd = decoded.get("command", "")
@@ -278,7 +311,8 @@ class FeederDevice:
                 )
             else:
                 _LOGGER.warning(
-                    "No feed response from device within 10s (%d portions)", portions,
+                    "No feed response from device within 10s (%d portions)",
+                    portions,
                 )
             return feed_triggered
         except Exception as e:
@@ -312,7 +346,7 @@ class FeederDevice:
         command = self._protocol.encode_command(
             CMD_SET_FEEDER_PLAN,
             length=len(schedule_data),
-            action_hex=schedule_data.hex().upper()
+            action_hex=schedule_data.hex().upper(),
         )
 
         try:
@@ -347,7 +381,9 @@ class FeederDevice:
         _LOGGER.debug("Setting child lock to %s", locked)
 
         value = "01" if locked else "00"
-        command = self._protocol.encode_command(CMD_CHILD_LOCK, length=1, action_hex=value)
+        command = self._protocol.encode_command(
+            CMD_CHILD_LOCK, length=1, action_hex=value
+        )
 
         try:
             await self._protocol.client.write_gatt_char(
@@ -381,7 +417,9 @@ class FeederDevice:
         _LOGGER.debug("Setting sound to %s", enabled)
 
         value = "01" if enabled else "00"
-        command = self._protocol.encode_command(CMD_REMINDER_TONE, length=1, action_hex=value)
+        command = self._protocol.encode_command(
+            CMD_REMINDER_TONE, length=1, action_hex=value
+        )
 
         try:
             await self._protocol.client.write_gatt_char(
@@ -423,7 +461,9 @@ class FeederDevice:
 
             new_count = len(self._protocol.received_data) - notification_count_before
             if new_count > 0:
-                new_notifications = self._protocol.received_data[notification_count_before:]
+                new_notifications = self._protocol.received_data[
+                    notification_count_before:
+                ]
                 _LOGGER.debug(
                     "query_schedule: got %d new notification(s)", len(new_notifications)
                 )
@@ -473,12 +513,42 @@ class FeederDevice:
                 result["device_version"] = decoded.get("device_version", "") or ""
                 _LOGGER.debug(
                     "Device info: name=%s version=%s",
-                    result["device_name"], result["device_version"],
+                    result["device_name"],
+                    result["device_version"],
                 )
                 break
         else:
             _LOGGER.warning("No device info response received within 2s")
         return result
+
+    async def _query_state(
+        self, query_func, command_code, timeout: float = 1.5
+    ) -> Optional[Dict]:
+        """Send a query command and return the first matching decoded notification, or None."""
+        if not self._connected:
+            raise RuntimeError("Not connected to device. Call connect() first.")
+        if not await self.ensure_connected():
+            raise RuntimeError("Connection lost. Please reconnect.")
+        self._protocol.clear_notifications()
+        before = len(self._protocol.received_data)
+        await query_func()
+        await asyncio.sleep(timeout)
+        codes = (command_code,) if isinstance(command_code, str) else command_code
+        for data in self._protocol.received_data[before:]:
+            decoded = self._protocol.decode_notification(data)
+            if decoded.get("command") in codes:
+                return decoded
+        return None
+
+    async def _set_feature(self, log_msg: str, coro) -> bool:
+        """Connection-guard wrapper for protocol set commands."""
+        if not self._connected:
+            raise RuntimeError("Not connected to device. Call connect() first.")
+        if not await self.ensure_connected():
+            raise RuntimeError("Connection lost. Please reconnect.")
+        _LOGGER.debug(log_msg)
+        await coro
+        return True
 
     async def get_child_lock_status(self) -> Optional[bool]:
         """
@@ -487,23 +557,13 @@ class FeederDevice:
         Returns:
             True if locked, False if unlocked, or None if query failed or no response.
         """
-        if not self._connected:
-            raise RuntimeError("Not connected to device. Call connect() first.")
-        if not await self.ensure_connected():
-            raise RuntimeError("Connection lost. Please reconnect.")
-        _LOGGER.debug("Querying child lock status")
-        self._protocol.clear_notifications()
-        before = len(self._protocol.received_data)
-        await self._protocol.query_child_lock()
-        await asyncio.sleep(1.5)
-        for data in self._protocol.received_data[before:]:
-            decoded = self._protocol.decode_notification(data)
-            if decoded.get("command") == "0D" and "child_lock" in decoded:
-                locked = decoded["child_lock"] == 1
-                _LOGGER.debug("Child lock status: %s", "locked" if locked else "unlocked")
-                return locked
-        _LOGGER.warning("No child lock response received within 1.5s")
-        return None
+        decoded = await self._query_state(self._protocol.query_child_lock, "0D")
+        if decoded is None or "child_lock" not in decoded:
+            _LOGGER.warning("No child lock response received within 1.5s")
+            return None
+        locked = decoded["child_lock"] == 1
+        _LOGGER.debug("Child lock status: %s", "locked" if locked else "unlocked")
+        return locked
 
     async def get_prompt_sound_status(self) -> Optional[bool]:
         """
@@ -512,23 +572,13 @@ class FeederDevice:
         Returns:
             True if sound is on, False if off, or None if query failed or no response.
         """
-        if not self._connected:
-            raise RuntimeError("Not connected to device. Call connect() first.")
-        if not await self.ensure_connected():
-            raise RuntimeError("Connection lost. Please reconnect.")
-        _LOGGER.debug("Querying prompt sound status")
-        self._protocol.clear_notifications()
-        before = len(self._protocol.received_data)
-        await self._protocol.query_reminder_tone()
-        await asyncio.sleep(1.5)
-        for data in self._protocol.received_data[before:]:
-            decoded = self._protocol.decode_notification(data)
-            if decoded.get("command") == "12" and "prompt_sound" in decoded:
-                enabled = decoded["prompt_sound"] == 1
-                _LOGGER.debug("Prompt sound status: %s", "on" if enabled else "off")
-                return enabled
-        _LOGGER.warning("No prompt sound response received within 1.5s")
-        return None
+        decoded = await self._query_state(self._protocol.query_reminder_tone, "12")
+        if decoded is None or "prompt_sound" not in decoded:
+            _LOGGER.warning("No prompt sound response received within 1.5s")
+            return None
+        enabled = decoded["prompt_sound"] == 1
+        _LOGGER.debug("Prompt sound status: %s", "on" if enabled else "off")
+        return enabled
 
     async def sync_time(self, dt: Optional[datetime] = None) -> None:
         """
@@ -541,6 +591,90 @@ class FeederDevice:
             raise RuntimeError("Not connected to device. Call connect() first.")
         _LOGGER.debug("Syncing time to %s", dt or "now")
         await self._protocol.send_sync_time(dt)
+
+    async def get_fault_status(self) -> Optional[int]:
+        """Query device fault status. Returns fault code int (0 = no fault), or None."""
+        decoded = await self._query_state(self._protocol.query_fault, "0A")
+        if decoded is None or "fault_code" not in decoded:
+            _LOGGER.warning("No fault status response received within 1.5s")
+            return None
+        _LOGGER.debug("Fault status: %s", decoded["fault_code"])
+        return decoded["fault_code"]
+
+    async def get_feeding_status(self) -> Optional[str]:
+        """Query current feeding status. Returns 'idle', 'feeding', 'error', or None."""
+        decoded = await self._query_state(self._protocol.query_feeding_status, "09")
+        if decoded is None or "feeding_status_text" not in decoded:
+            _LOGGER.warning("No feeding status response received within 1.5s")
+            return None
+        status = decoded["feeding_status_text"].lower()
+        _LOGGER.debug("Feeding status: %s", status)
+        return status
+
+    async def set_led(self, enabled: bool) -> bool:
+        """Set LED indicator on/off."""
+        return await self._set_feature(
+            f"Setting LED to {enabled}", self._protocol.set_led(enabled)
+        )
+
+    async def set_auto_lock(self, enabled: bool) -> bool:
+        """Set auto-lock on/off."""
+        return await self._set_feature(
+            f"Setting auto-lock to {enabled}", self._protocol.set_auto_lock(enabled)
+        )
+
+    async def set_atmosphere_light(self, enabled: bool) -> bool:
+        """Set atmosphere light on/off."""
+        return await self._set_feature(
+            f"Setting atmosphere light to {enabled}",
+            self._protocol.set_atmosphere_light(enabled),
+        )
+
+    async def factory_reset(self) -> bool:
+        """Send factory reset command."""
+        _LOGGER.warning("Sending factory reset to feeder %s", self.address)
+        return await self._set_feature("Factory reset", self._protocol.factory_reset())
+
+    async def get_do_not_disturb(self) -> Optional[Dict]:
+        """
+        Query Do Not Disturb settings.
+
+        Returns:
+            Dict with keys: enabled (bool), start_time (str HH:MM), end_time (str HH:MM),
+            or None if no response.
+        """
+        decoded = await self._query_state(
+            self._protocol.query_do_not_disturb, ("17", "18")
+        )
+        if decoded is None or "do_not_disturb" not in decoded:
+            _LOGGER.warning("No DND response received within 1.5s")
+            return None
+        result = {
+            "enabled": decoded["do_not_disturb"],
+            "start_time": decoded.get("dnd_start", "22:00"),
+            "end_time": decoded.get("dnd_end", "08:00"),
+        }
+        _LOGGER.debug("DND settings: %s", result)
+        return result
+
+    async def set_do_not_disturb(
+        self, enabled: bool, start_time: str = "22:00", end_time: str = "08:00"
+    ) -> bool:
+        """Set Do Not Disturb. start_time/end_time in HH:MM format."""
+        return await self._set_feature(
+            f"Setting DND to {enabled} ({start_time}–{end_time})",
+            self._protocol.set_do_not_disturb(enabled, start_time, end_time),
+        )
+
+    async def set_long_ring(self, enabled: bool) -> bool:
+        """Set long ring / extended alarm tone on/off."""
+        return await self._set_feature(
+            f"Setting long ring to {enabled}", self._protocol.set_long_ring(enabled)
+        )
+
+    def get_last_feed_result(self) -> Optional[Dict]:
+        """Return last feed result from notifications, or None if no feed has completed."""
+        return self._protocol.last_feed_result
 
     @property
     def is_connected(self) -> bool:

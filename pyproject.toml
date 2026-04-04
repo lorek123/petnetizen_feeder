@@ -1,6 +1,6 @@
 [project]
 name = "petnetizen-feeder"
-version = "0.4.2"
+version = "0.5.1"
 description = "Python BLE library for Petnetizen automatic pet feeders (Home Assistant–friendly)"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -44,3 +44,8 @@ packages = ["petnetizen_feeder"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.9",
+]
