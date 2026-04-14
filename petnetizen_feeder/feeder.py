@@ -170,16 +170,24 @@ class FeederDevice:
         bleak_retry_connector) and needs to hand it to the library.
         """
         _LOGGER.debug("Reconnecting to feeder %s", self.address)
+        # Set _connected=False while the reconnect is in progress so
+        # is_connected returns False during the attempt.  Crucially we
+        # restore it to True on failure: ensure_connected() guards on
+        # `if not self._connected: return False`, so leaving it False
+        # after a failed reconnect would permanently block all future
+        # reconnection attempts until HA restarts.
         self._connected = False
         if ble_client is not None:
             ok_gatt = await self._protocol.replace_client(ble_client, enable_notifications=False)
         else:
             ok_gatt = await self._protocol.connect(enable_notifications=False)
         if not ok_gatt:
+            self._connected = True  # allow ensure_connected() to retry
             _LOGGER.warning("Failed to reconnect to feeder %s", self.address)
             return False
         await self._protocol.send_verification_code(self.verification_code)
         if not await self._protocol.enable_notifications():
+            self._connected = True  # allow ensure_connected() to retry
             _LOGGER.warning("Failed to enable notifications for feeder %s", self.address)
             return False
         self._connected = True
