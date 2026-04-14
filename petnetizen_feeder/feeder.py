@@ -559,7 +559,7 @@ class FeederDevice:
         """
         decoded = await self._query_state(self._protocol.query_child_lock, "0D")
         if decoded is None or "child_lock" not in decoded:
-            _LOGGER.warning("No child lock response received within 1.5s")
+            _LOGGER.debug("No child lock response received within 1.5s")
             return None
         locked = decoded["child_lock"] == 1
         _LOGGER.debug("Child lock status: %s", "locked" if locked else "unlocked")
@@ -574,7 +574,7 @@ class FeederDevice:
         """
         decoded = await self._query_state(self._protocol.query_reminder_tone, "12")
         if decoded is None or "prompt_sound" not in decoded:
-            _LOGGER.warning("No prompt sound response received within 1.5s")
+            _LOGGER.debug("No prompt sound response received within 1.5s")
             return None
         enabled = decoded["prompt_sound"] == 1
         _LOGGER.debug("Prompt sound status: %s", "on" if enabled else "off")
@@ -596,7 +596,7 @@ class FeederDevice:
         """Query device fault status. Returns fault code int (0 = no fault), or None."""
         decoded = await self._query_state(self._protocol.query_fault, "0A")
         if decoded is None or "fault_code" not in decoded:
-            _LOGGER.warning("No fault status response received within 1.5s")
+            _LOGGER.debug("No fault status response received within 1.5s")
             return None
         _LOGGER.debug("Fault status: %s", decoded["fault_code"])
         return decoded["fault_code"]
@@ -605,7 +605,7 @@ class FeederDevice:
         """Query current feeding status. Returns 'idle', 'feeding', 'error', or None."""
         decoded = await self._query_state(self._protocol.query_feeding_status, "09")
         if decoded is None or "feeding_status_text" not in decoded:
-            _LOGGER.warning("No feeding status response received within 1.5s")
+            _LOGGER.debug("No feeding status response received within 1.5s")
             return None
         status = decoded["feeding_status_text"].lower()
         _LOGGER.debug("Feeding status: %s", status)
@@ -647,7 +647,9 @@ class FeederDevice:
             self._protocol.query_do_not_disturb, ("17", "18")
         )
         if decoded is None or "do_not_disturb" not in decoded:
-            _LOGGER.warning("No DND response received within 1.5s")
+            # Some feeder firmwares don't implement DND (cmd 0x17/0x18) — log at
+            # DEBUG only, since this fires every poll and is not actionable.
+            _LOGGER.debug("No DND response received within 1.5s (DND may not be supported by this firmware)")
             return None
         result = {
             "enabled": decoded["do_not_disturb"],

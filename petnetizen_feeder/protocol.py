@@ -508,6 +508,13 @@ class FeederBLEProtocol:
             mtu = await self._request_mtu(512)
             _LOGGER.debug("[%s] MTU: %d", self.device_address, mtu)
 
+            # Give the BLE link time to stabilise after the MTU exchange before
+            # writing to the CCCD.  Through an ESP32 BLE proxy the MTU request
+            # may complete immediately without a real GATT round-trip, leaving
+            # the link unready — which causes the feeder to terminate the
+            # connection with HCI error 19 on the first start_notify attempt.
+            await asyncio.sleep(1.0)
+
             max_attempts = 3
             for attempt in range(1, max_attempts + 1):
                 if not self.client.is_connected:

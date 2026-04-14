@@ -43,7 +43,7 @@ from .feeder import (
     discover_feeders,
 )
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 __all__ = [
     "ConnectionFactory",
     "FeederDevice",
