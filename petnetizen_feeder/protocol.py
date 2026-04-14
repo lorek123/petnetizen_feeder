@@ -425,8 +425,51 @@ class FeederBLEProtocol:
             )
             return getattr(self.client, "mtu_size", 23)
 
+    async def _do_start_notify(self) -> bool:
+        """Write CCCD 0x0001 to enable notifications, with retry on transient failure."""
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            if not self.client.is_connected:
+                _LOGGER.warning(
+                    "[%s] Device disconnected before start_notify (attempt %d)",
+                    self.device_address,
+                    attempt,
+                )
+                return False
+            try:
+                if attempt > 1:
+                    await asyncio.sleep(2.0)
+                await self.client.start_notify(
+                    self.notify_characteristic, self.notification_handler
+                )
+                _LOGGER.debug(
+                    "[%s] Notifications enabled (attempt %d/%d)",
+                    self.device_address,
+                    attempt,
+                    max_attempts,
+                )
+                return True
+            except Exception as exc:
+                _LOGGER.warning(
+                    "[%s] start_notify failed (attempt %d/%d): %s",
+                    self.device_address,
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+                if attempt == max_attempts:
+                    return False
+        return False
+
+    async def enable_notifications(self) -> bool:
+        """Enable BLE notifications.  Call after connect(enable_notifications=False)."""
+        return await self._do_start_notify()
+
     async def connect(
-        self, timeout: float = 10.0, ble_client: Optional[BleakClient] = None
+        self,
+        timeout: float = 10.0,
+        ble_client: Optional[BleakClient] = None,
+        enable_notifications: bool = True,
     ) -> bool:
         """Connect to the device. If ble_client is provided (e.g. from bleak_retry_connector), use it."""
         if ble_client is not None:
@@ -508,46 +551,13 @@ class FeederBLEProtocol:
             mtu = await self._request_mtu(512)
             _LOGGER.debug("[%s] MTU: %d", self.device_address, mtu)
 
-            # Give the BLE link time to stabilise after the MTU exchange before
-            # writing to the CCCD.  Through an ESP32 BLE proxy the MTU request
-            # may complete immediately without a real GATT round-trip, leaving
-            # the link unready — which causes the feeder to terminate the
-            # connection with HCI error 19 on the first start_notify attempt.
-            await asyncio.sleep(1.0)
+            if not enable_notifications:
+                # Caller will authenticate (send verification code) and then
+                # call enable_notifications() before using the connection.
+                return True
 
-            max_attempts = 3
-            for attempt in range(1, max_attempts + 1):
-                if not self.client.is_connected:
-                    _LOGGER.warning(
-                        "[%s] Device disconnected before start_notify (attempt %d)",
-                        self.device_address,
-                        attempt,
-                    )
-                    return False
-                try:
-                    if attempt > 1:
-                        await asyncio.sleep(2.0)
-                    await self.client.start_notify(
-                        notify_char, self.notification_handler
-                    )
-                    _LOGGER.debug(
-                        "[%s] Connected and notifications started (attempt %d/%d)",
-                        self.device_address,
-                        attempt,
-                        max_attempts,
-                    )
-                    return True
-                except Exception as exc:
-                    _LOGGER.warning(
-                        "[%s] start_notify failed (attempt %d/%d): %s",
-                        self.device_address,
-                        attempt,
-                        max_attempts,
-                        exc,
-                    )
-                    if attempt == max_attempts:
-                        return False
-            return False
+            return await self._do_start_notify()
+
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] Post-connect setup failed: %s",
@@ -677,7 +687,9 @@ class FeederBLEProtocol:
                 "[%s] Disconnect called but not connected", self.device_address
             )
 
-    async def replace_client(self, ble_client: BleakClient) -> bool:
+    async def replace_client(
+        self, ble_client: BleakClient, enable_notifications: bool = True
+    ) -> bool:
         """Replace BleakClient with a freshly connected one (for integration-level reconnection)."""
         if self.client:
             try:
@@ -689,7 +701,7 @@ class FeederBLEProtocol:
                     await self.client.disconnect()
             except Exception:
                 pass
-        return await self.connect(ble_client=ble_client)
+        return await self.connect(ble_client=ble_client, enable_notifications=enable_notifications)
 
     async def send_verification_code(self, code: str = DEFAULT_VERIFICATION_CODE):
         """Send verification code to the device"""

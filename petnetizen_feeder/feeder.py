@@ -142,13 +142,25 @@ class FeederDevice:
             True if connection successful, False otherwise
         """
         _LOGGER.debug("Connecting to feeder %s", self.address)
-        if await self._protocol.connect(ble_client=ble_client):
-            await self._protocol.send_verification_code(self.verification_code)
-            self._connected = True
-            _LOGGER.info("Connected to feeder %s", self.address)
-            return True
-        _LOGGER.warning("Failed to connect to feeder %s", self.address)
-        return False
+        # Establish GATT connection without enabling notifications yet.
+        if not await self._protocol.connect(ble_client=ble_client, enable_notifications=False):
+            _LOGGER.warning("Failed to connect to feeder %s", self.address)
+            return False
+        # Send the verification code (CMD_SET_FAMILY_ID) BEFORE writing the
+        # CCCD to enable notifications.  The feeder's Nordic BLE firmware
+        # calls sd_ble_gatts_hvx() immediately when notifications are enabled;
+        # if the BLE link is still settling (e.g. connection-parameter
+        # negotiation in progress through an ESP32 proxy), the TX buffer is
+        # full and the firmware disconnects with HCI error 19.  Authenticating
+        # first gives the stack ~2 s to complete negotiation and puts the
+        # feeder in a known state before the CCCD write arrives.
+        await self._protocol.send_verification_code(self.verification_code)
+        if not await self._protocol.enable_notifications():
+            _LOGGER.warning("Failed to enable notifications for feeder %s", self.address)
+            return False
+        self._connected = True
+        _LOGGER.info("Connected to feeder %s", self.address)
+        return True
 
     async def reconnect(self, ble_client: Optional[Any] = None) -> bool:
         """
@@ -160,16 +172,19 @@ class FeederDevice:
         _LOGGER.debug("Reconnecting to feeder %s", self.address)
         self._connected = False
         if ble_client is not None:
-            ok = await self._protocol.replace_client(ble_client)
+            ok_gatt = await self._protocol.replace_client(ble_client, enable_notifications=False)
         else:
-            ok = await self._protocol.connect()
-        if ok:
-            await self._protocol.send_verification_code(self.verification_code)
-            self._connected = True
-            _LOGGER.info("Reconnected to feeder %s", self.address)
-        else:
+            ok_gatt = await self._protocol.connect(enable_notifications=False)
+        if not ok_gatt:
             _LOGGER.warning("Failed to reconnect to feeder %s", self.address)
-        return ok
+            return False
+        await self._protocol.send_verification_code(self.verification_code)
+        if not await self._protocol.enable_notifications():
+            _LOGGER.warning("Failed to enable notifications for feeder %s", self.address)
+            return False
+        self._connected = True
+        _LOGGER.info("Reconnected to feeder %s", self.address)
+        return True
 
     async def disconnect(self):
         """Disconnect from the device"""
