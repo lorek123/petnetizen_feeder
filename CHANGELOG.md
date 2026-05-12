@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.5.6] - 2026-05-12
+
+### Added
+
+- **Auto time-sync on device request**: the notification handler now responds automatically when the feeder firmware pushes `CMD_SYNC_TIME` ("05") as a device-initiated time-sync request. The Android app does this via `BleSyncTimeCodec.handlerController` → `BleDeviceController.syncTime`. Without this, the feeder clock stays wrong after a power cycle until a manual button press.
+- **Heartbeat echo ACK**: when the *device* sends `CMD_HEARTBEAT` ("03"), the handler now echoes an ACK back (same command, length 0). The Android product-test controller does this; some firmware builds expect a bidirectional ping/pong rather than only central-initiated pulses.
+
 ## [0.5.5] - 2026-05-12
 
 ### Added

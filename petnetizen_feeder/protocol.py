@@ -377,7 +377,7 @@ class FeederBLEProtocol:
         self.received_data.clear()
 
     def notification_handler(self, sender: BleakGATTCharacteristic, data: bytearray):
-        """Handle notifications from the device"""
+        """Handle notifications from the device."""
         _LOGGER.debug(
             "[%s] Notification received: %s (%d bytes)",
             self.device_address,
@@ -385,11 +385,42 @@ class FeederBLEProtocol:
             len(data),
         )
         self.received_data.append(data)
-        # Track last completed manual feed result inline so it's always current
-        if len(data) >= 2 and f"{data[1]:02X}" == "0C":
-            decoded = self.decode_notification(data)
-            if decoded.get("feed_records"):
-                self.last_feed_result = decoded["feed_records"][-1]
+
+        if len(data) >= 2:
+            cmd = f"{data[1]:02X}"
+
+            # Track last completed manual feed result inline so it's always current
+            if cmd == "0C":
+                decoded = self.decode_notification(data)
+                if decoded.get("feed_records"):
+                    self.last_feed_result = decoded["feed_records"][-1]
+
+            # The feeder firmware pushes CMD_SYNC_TIME ("05") as a device-initiated
+            # request for the current time.  The Android app responds immediately via
+            # BleSyncTimeCodec.handlerController → BleDeviceController.syncTime().
+            # If we ignore it the feeder clock stays wrong (e.g. after a power outage).
+            elif cmd == "05":
+                _LOGGER.debug(
+                    "[%s] Device requested time sync — scheduling auto-response",
+                    self.device_address,
+                )
+                try:
+                    asyncio.ensure_future(self.send_sync_time())
+                except RuntimeError:
+                    pass  # No event loop running (unlikely in BLE context)
+
+            # Some firmware builds initiate CMD_HEARTBEAT ("03") from the device side
+            # and expect an echo ACK.  The Android product-test controller replies with
+            # the same command / length 0.  We mirror that here to keep parity.
+            elif cmd == "03":
+                _LOGGER.debug(
+                    "[%s] Device heartbeat ping — scheduling echo ACK",
+                    self.device_address,
+                )
+                try:
+                    asyncio.ensure_future(self.send_heartbeat())
+                except RuntimeError:
+                    pass
 
     async def _request_mtu(self, desired_mtu: int = 512) -> int:
         """Request an MTU exchange, mirroring the Android app's requestMtu(512).
