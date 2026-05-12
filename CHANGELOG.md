@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.5.5] - 2026-05-12
+
+### Added
+
+- **Heartbeat keep-alive** (`FeederBLEProtocol.send_heartbeat()`): sends `CMD_HEARTBEAT` (0x03, no payload) to the feeder, matching the Android app's behaviour. The feeder firmware treats the link as idle without periodic writes and may drop it.
+- `FeederDevice._heartbeat_loop()`: background `asyncio.Task` that calls `send_heartbeat()` every 60 seconds (the same interval used by the official app). The loop is started automatically after a successful `connect()` or `reconnect()`, and cancelled on `disconnect()` or before a factory-managed reconnection attempt.
+
 ## [0.4.0] - 2026-02-19
 
 ### Added

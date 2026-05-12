@@ -701,7 +701,9 @@ class FeederBLEProtocol:
                     await self.client.disconnect()
             except Exception:
                 pass
-        return await self.connect(ble_client=ble_client, enable_notifications=enable_notifications)
+        return await self.connect(
+            ble_client=ble_client, enable_notifications=enable_notifications
+        )
 
     async def send_verification_code(self, code: str = DEFAULT_VERIFICATION_CODE):
         """Send verification code to the device"""
@@ -822,6 +824,26 @@ class FeederBLEProtocol:
                 self.device_address,
                 exc,
             )
+
+    async def send_heartbeat(self) -> bool:
+        """Send a heartbeat packet (CMD_HEARTBEAT, no payload) to keep the BLE link alive.
+
+        The Android app sends this every 60 s while connected.  Sending it
+        prevents the feeder's firmware from treating the connection as idle
+        and dropping it.
+
+        Returns True if the write succeeded, False otherwise (connection lost).
+        """
+        if not self.client or not self.client.is_connected:
+            return False
+        command = self.encode_command(CMD_HEARTBEAT, length=0)
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            _LOGGER.debug("[%s] Heartbeat sent", self.device_address)
+            return True
+        except Exception as exc:
+            _LOGGER.debug("[%s] Heartbeat write failed: %s", self.device_address, exc)
+            return False
 
     async def _ensure_connected(self) -> bool:
         """Ensure connection is still active.

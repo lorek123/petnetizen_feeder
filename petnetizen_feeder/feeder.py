@@ -129,6 +129,8 @@ class FeederDevice:
             self._protocol._managed_connection = True
         self._connected = False
         self._reconnect_lock = asyncio.Lock()
+        self._heartbeat_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
+        self._heartbeat_interval: int = 60  # seconds, matches Android app
 
     async def connect(self, ble_client: Optional[Any] = None) -> bool:
         """
@@ -143,7 +145,9 @@ class FeederDevice:
         """
         _LOGGER.debug("Connecting to feeder %s", self.address)
         # Establish GATT connection without enabling notifications yet.
-        if not await self._protocol.connect(ble_client=ble_client, enable_notifications=False):
+        if not await self._protocol.connect(
+            ble_client=ble_client, enable_notifications=False
+        ):
             _LOGGER.warning("Failed to connect to feeder %s", self.address)
             return False
         # Send the verification code (CMD_SET_FAMILY_ID) BEFORE writing the
@@ -156,9 +160,12 @@ class FeederDevice:
         # feeder in a known state before the CCCD write arrives.
         await self._protocol.send_verification_code(self.verification_code)
         if not await self._protocol.enable_notifications():
-            _LOGGER.warning("Failed to enable notifications for feeder %s", self.address)
+            _LOGGER.warning(
+                "Failed to enable notifications for feeder %s", self.address
+            )
             return False
         self._connected = True
+        self._start_heartbeat()
         _LOGGER.info("Connected to feeder %s", self.address)
         return True
 
@@ -178,7 +185,9 @@ class FeederDevice:
         # reconnection attempts until HA restarts.
         self._connected = False
         if ble_client is not None:
-            ok_gatt = await self._protocol.replace_client(ble_client, enable_notifications=False)
+            ok_gatt = await self._protocol.replace_client(
+                ble_client, enable_notifications=False
+            )
         else:
             ok_gatt = await self._protocol.connect(enable_notifications=False)
         if not ok_gatt:
@@ -188,18 +197,69 @@ class FeederDevice:
         await self._protocol.send_verification_code(self.verification_code)
         if not await self._protocol.enable_notifications():
             self._connected = True  # allow ensure_connected() to retry
-            _LOGGER.warning("Failed to enable notifications for feeder %s", self.address)
+            _LOGGER.warning(
+                "Failed to enable notifications for feeder %s", self.address
+            )
             return False
         self._connected = True
+        self._start_heartbeat()
         _LOGGER.info("Reconnected to feeder %s", self.address)
         return True
 
     async def disconnect(self):
         """Disconnect from the device"""
         _LOGGER.debug("Disconnecting from feeder %s", self.address)
+        self._cancel_heartbeat()
         await self._protocol.disconnect()
         self._connected = False
         _LOGGER.info("Disconnected from feeder %s", self.address)
+
+    # ------------------------------------------------------------------
+    # Heartbeat
+    # ------------------------------------------------------------------
+
+    def _start_heartbeat(self) -> None:
+        """Start the background heartbeat task, cancelling any existing one."""
+        self._cancel_heartbeat()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            return
+        self._heartbeat_task = loop.create_task(self._heartbeat_loop())
+
+    def _cancel_heartbeat(self) -> None:
+        """Cancel any running heartbeat task."""
+        task = self._heartbeat_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._heartbeat_task = None
+
+    async def _heartbeat_loop(self) -> None:
+        """Send CMD_HEARTBEAT every 60 s, mirroring the Android app.
+
+        The loop stops when the connection drops or ``disconnect()`` is called.
+        The coordinator's poll (every 60 s) and ``ensure_connected()`` handle
+        recovery; the heartbeat is purely a keep-alive so the feeder firmware
+        does not consider the BLE link idle and close it.
+        """
+        try:
+            while True:
+                await asyncio.sleep(self._heartbeat_interval)
+                if not self.is_connected:
+                    _LOGGER.debug(
+                        "Heartbeat loop stopped: feeder %s no longer connected",
+                        self.address,
+                    )
+                    break
+                ok = await self._protocol.send_heartbeat()
+                if not ok:
+                    _LOGGER.debug(
+                        "Heartbeat failed for %s — connection likely dropped",
+                        self.address,
+                    )
+                    break
+        except asyncio.CancelledError:
+            pass
 
     async def ensure_connected(self) -> bool:
         """Ensure the device is connected, attempting reconnection if needed.
@@ -223,6 +283,9 @@ class FeederDevice:
             _LOGGER.info("Feeder %s disconnected, attempting reconnect", self.address)
             try:
                 if self._connection_factory:
+                    # Cancel the heartbeat before touching the connection so
+                    # no writes race with the slot-release / new-connect flow.
+                    self._cancel_heartbeat()
                     # Release the stale connection slot on the proxy BEFORE
                     # opening a new one.  Without this the ESP32 proxy leaks
                     # slots (max ~3) until it's completely stuck.
@@ -672,7 +735,9 @@ class FeederDevice:
         if decoded is None or "do_not_disturb" not in decoded:
             # Some feeder firmwares don't implement DND (cmd 0x17/0x18) — log at
             # DEBUG only, since this fires every poll and is not actionable.
-            _LOGGER.debug("No DND response received within 1.5s (DND may not be supported by this firmware)")
+            _LOGGER.debug(
+                "No DND response received within 1.5s (DND may not be supported by this firmware)"
+            )
             return None
         result = {
             "enabled": decoded["do_not_disturb"],
