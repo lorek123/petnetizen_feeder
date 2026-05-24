@@ -18,6 +18,23 @@ from .protocol import (
     CMD_REMINDER_TONE,
     CMD_QUERY_FEEDER_PLAN,
     DEFAULT_VERIFICATION_CODE,
+    CP01B_ROTATION_MODE,
+    CP01B_PLAYBACK_FREQ,
+    CP01B_SOUND_EFFECT,
+    CP01B_OPERATION_MODE,
+    CP01B_VOLUME,
+    CP01B_AUTO_COUNTDOWN,
+    CP01B_PROMPT_SOUND,
+    CP01B_FUN_MODE,
+    TC02_OPERATION_MODE,
+    TC02_ROTATION_MODE,
+    TC02_COLOR_RGB,
+    TC02_MOOD_LIGHT_MODE,
+    TC02_LED_COLOR,
+    TC02_SOUND_EFFECT,
+    TC02_PLAYBACK_FREQ,
+    TC02_VOLUME,
+    TC02_AUTO_COUNTDOWN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -765,6 +782,196 @@ class FeederDevice:
     def get_last_feed_result(self) -> Optional[Dict]:
         """Return last feed result from notifications, or None if no feed has completed."""
         return self._protocol.last_feed_result
+
+    async def get_battery_level(self) -> Optional[int]:
+        """Query battery level (0–100) via the feeding-status notification. Returns None if unsupported."""
+        decoded = await self._query_state(self._protocol.query_feeding_status, "09")
+        if decoded is None:
+            return None
+        return decoded.get("battery_level")
+
+    # ------------------------------------------------------------------
+    # CP01B (DU-CP01B interactive cat toy) accessors
+    # ------------------------------------------------------------------
+
+    async def get_cp01b_state(self) -> Dict:
+        """Query all CP01B DP values. Returns a dict of {state_key: value}."""
+        if not self._connected:
+            raise RuntimeError("Not connected to device. Call connect() first.")
+        if not await self.ensure_connected():
+            raise RuntimeError("Connection lost. Please reconnect.")
+        dp_map = [
+            (CP01B_ROTATION_MODE,  "rotation_mode"),
+            (CP01B_PLAYBACK_FREQ,  "playback_frequency"),
+            (CP01B_SOUND_EFFECT,   "sound_effect"),
+            (CP01B_OPERATION_MODE, "operation_mode"),
+            (CP01B_VOLUME,         "volume"),
+            (CP01B_AUTO_COUNTDOWN, "auto_mode_countdown"),
+            (CP01B_PROMPT_SOUND,   "cp01b_prompt_sound"),
+            (CP01B_FUN_MODE,       "fun_mode"),
+        ]
+        result: Dict = {}
+        for cmd, key in dp_map:
+            decoded = await self._query_state(
+                lambda c=cmd: self._protocol.query_cp01b_dp(c), cmd
+            )
+            if decoded is not None and key in decoded:
+                result[key] = decoded[key]
+        return result
+
+    async def set_cp01b_operation_mode(self, value: int) -> bool:
+        """Set CP01B operation mode (0–5)."""
+        return await self._set_feature(
+            f"CP01B operation_mode={value}",
+            self._protocol.set_cp01b_dp(CP01B_OPERATION_MODE, value),
+        )
+
+    async def set_cp01b_rotation_mode(self, value: int) -> bool:
+        """Set CP01B rotation mode."""
+        return await self._set_feature(
+            f"CP01B rotation_mode={value}",
+            self._protocol.set_cp01b_dp(CP01B_ROTATION_MODE, value),
+        )
+
+    async def set_cp01b_volume(self, value: int) -> bool:
+        """Set CP01B volume (0–100)."""
+        return await self._set_feature(
+            f"CP01B volume={value}",
+            self._protocol.set_cp01b_dp(CP01B_VOLUME, value),
+        )
+
+    async def set_cp01b_playback_frequency(self, value: int) -> bool:
+        """Set CP01B playback frequency."""
+        return await self._set_feature(
+            f"CP01B playback_freq={value}",
+            self._protocol.set_cp01b_dp(CP01B_PLAYBACK_FREQ, value),
+        )
+
+    async def set_cp01b_sound_effect(self, value: int) -> bool:
+        """Set CP01B sound effect."""
+        return await self._set_feature(
+            f"CP01B sound_effect={value}",
+            self._protocol.set_cp01b_dp(CP01B_SOUND_EFFECT, value),
+        )
+
+    async def set_cp01b_auto_mode_countdown(self, value: int) -> bool:
+        """Set CP01B auto-mode countdown (minutes)."""
+        return await self._set_feature(
+            f"CP01B auto_countdown={value}",
+            self._protocol.set_cp01b_dp(CP01B_AUTO_COUNTDOWN, value),
+        )
+
+    async def set_cp01b_prompt_sound(self, enabled: bool) -> bool:
+        """Set CP01B prompt sound on/off."""
+        return await self._set_feature(
+            f"CP01B prompt_sound={enabled}",
+            self._protocol.set_cp01b_dp(CP01B_PROMPT_SOUND, 1 if enabled else 0),
+        )
+
+    async def set_cp01b_fun_mode(self, value: int) -> bool:
+        """Set CP01B fun mode."""
+        return await self._set_feature(
+            f"CP01B fun_mode={value}",
+            self._protocol.set_cp01b_dp(CP01B_FUN_MODE, value),
+        )
+
+    # TC02 (Du-TC02 laser cat teaser) accessors
+    # real_tags 50-59 per ble-device-type.json dpMappings
+
+    async def get_tc02_state(self) -> Dict:
+        """Query all TC02 DP values. Returns a dict of {state_key: value}."""
+        result: Dict = {}
+        dps = [
+            (TC02_OPERATION_MODE,  "tc02_operation_mode"),
+            (TC02_ROTATION_MODE,   "tc02_rotation_mode"),
+            (TC02_COLOR_RGB,       "tc02_color_r"),  # also populates tc02_color_g/b
+            (TC02_MOOD_LIGHT_MODE, "tc02_mood_light_mode"),
+            (TC02_LED_COLOR,       "tc02_led_color"),
+            (TC02_SOUND_EFFECT,    "tc02_sound_effect"),
+            (TC02_PLAYBACK_FREQ,   "tc02_playback_frequency"),
+            (TC02_VOLUME,          "tc02_volume"),
+            (TC02_AUTO_COUNTDOWN,  "tc02_auto_countdown_total"),
+        ]
+        for cmd, key in dps:
+            try:
+                await self._query_state(
+                    lambda c=cmd: self._protocol.query_tc02_dp(c), cmd
+                )
+                state = self._protocol.last_state or {}
+                if key in state:
+                    result[key] = state[key]
+                    if cmd == TC02_COLOR_RGB:
+                        for extra in ("tc02_color_g", "tc02_color_b"):
+                            if extra in state:
+                                result[extra] = state[extra]
+                    if cmd == TC02_AUTO_COUNTDOWN and "tc02_auto_countdown_remaining" in state:
+                        result["tc02_auto_countdown_remaining"] = state["tc02_auto_countdown_remaining"]
+            except Exception:
+                pass
+        return result
+
+    async def set_tc02_operation_mode(self, value: int) -> bool:
+        """Set TC02 operation mode (0–5)."""
+        return await self._set_feature(
+            f"TC02 operation_mode={value}",
+            self._protocol.set_tc02_dp(TC02_OPERATION_MODE, value),
+        )
+
+    async def set_tc02_rotation_mode(self, value: int) -> bool:
+        """Set TC02 rotation mode (0–5)."""
+        return await self._set_feature(
+            f"TC02 rotation_mode={value}",
+            self._protocol.set_tc02_dp(TC02_ROTATION_MODE, value),
+        )
+
+    async def set_tc02_color_rgb(self, r: int, g: int, b: int) -> bool:
+        """Set TC02 RGB color (each channel 0–255)."""
+        return await self._set_feature(
+            f"TC02 color_rgb=({r},{g},{b})",
+            self._protocol.set_tc02_color_rgb(r, g, b),
+        )
+
+    async def set_tc02_mood_light_mode(self, value: int) -> bool:
+        """Set TC02 mood light mode."""
+        return await self._set_feature(
+            f"TC02 mood_light_mode={value}",
+            self._protocol.set_tc02_dp(TC02_MOOD_LIGHT_MODE, value),
+        )
+
+    async def set_tc02_led_color(self, value: int) -> bool:
+        """Set TC02 LED color preset index."""
+        return await self._set_feature(
+            f"TC02 led_color={value}",
+            self._protocol.set_tc02_dp(TC02_LED_COLOR, value),
+        )
+
+    async def set_tc02_sound_effect(self, value: int) -> bool:
+        """Set TC02 sound effect index."""
+        return await self._set_feature(
+            f"TC02 sound_effect={value}",
+            self._protocol.set_tc02_dp(TC02_SOUND_EFFECT, value),
+        )
+
+    async def set_tc02_playback_frequency(self, value: int) -> bool:
+        """Set TC02 playback frequency (0–10)."""
+        return await self._set_feature(
+            f"TC02 playback_frequency={value}",
+            self._protocol.set_tc02_dp(TC02_PLAYBACK_FREQ, value),
+        )
+
+    async def set_tc02_volume(self, value: int) -> bool:
+        """Set TC02 volume (0–100)."""
+        return await self._set_feature(
+            f"TC02 volume={value}",
+            self._protocol.set_tc02_dp(TC02_VOLUME, value),
+        )
+
+    async def set_tc02_auto_mode_countdown(self, value: int) -> bool:
+        """Set TC02 auto mode countdown in minutes (total duration, 0–60)."""
+        return await self._set_feature(
+            f"TC02 auto_mode_countdown={value}",
+            self._protocol.set_tc02_dp(TC02_AUTO_COUNTDOWN, value),
+        )
 
     @property
     def is_connected(self) -> bool:

@@ -53,6 +53,30 @@ CMD_DO_NOT_DISTURB_STATUS = "17"
 CMD_DO_NOT_DISTURB = "18"
 CMD_LONG_RING = "19"
 
+# F14B V2 real_tag overrides (whole DP table is remapped on this model)
+CMD_SYNC_TIME_F14B = "02"  # real_tag "02" = sync_time on F14B (= RESTORE_FACTORY on standard)
+
+# CP01B (DU-CP01B interactive cat toy) real_tag command bytes from DpCp01b enum
+CP01B_ROTATION_MODE  = "2F"
+CP01B_PLAYBACK_FREQ  = "31"
+CP01B_SOUND_EFFECT   = "32"
+CP01B_OPERATION_MODE = "33"
+CP01B_VOLUME         = "34"
+CP01B_AUTO_COUNTDOWN = "35"
+CP01B_PROMPT_SOUND   = "36"
+CP01B_FUN_MODE       = "3E"
+
+# Du-TC02 (laser cat teaser) real_tag command bytes from ble-device-type.json dpMappings
+TC02_OPERATION_MODE  = "50"
+TC02_ROTATION_MODE   = "51"
+TC02_COLOR_RGB       = "52"  # 3-byte payload: R G B (each 0-255)
+TC02_MOOD_LIGHT_MODE = "53"
+TC02_LED_COLOR       = "54"
+TC02_SOUND_EFFECT    = "55"
+TC02_PLAYBACK_FREQ   = "56"
+TC02_VOLUME          = "57"
+TC02_AUTO_COUNTDOWN  = "59"  # 2-byte payload: total_minutes remaining_minutes
+
 
 # Service UUIDs for connection (per device type)
 FEEDER_SERVICE_UUIDS = [
@@ -75,6 +99,12 @@ def detect_device_type(device_name: Optional[str] = None) -> str:
         return "jk"
     elif "ALI" in name_upper or "ALIBABA" in name_upper:
         return "ali"
+    elif "CP01B" in name_upper:
+        return "cp01b"
+    elif "F14B" in name_upper:
+        return "f14b"
+    elif "TC02" in name_upper:
+        return "tc02"
     return "standard"
 
 
@@ -270,6 +300,8 @@ class FeederBLEProtocol:
                     result["feeding_status_text"] = status_map.get(
                         data_section[0], f"Unknown({data_section[0]})"
                     )
+                    if len(data_section) >= 6 and data_section[5] <= 100:
+                        result["battery_level"] = data_section[5]
                 elif command_hex == "0D" and len(data_section) >= 1:
                     result["child_lock"] = data_section[0]
                     result["child_lock_text"] = (
@@ -367,6 +399,44 @@ class FeederBLEProtocol:
                         offset += 5
                     if slots:
                         result["feed_plan_slots"] = slots
+                elif command_hex == CP01B_ROTATION_MODE and len(data_section) >= 1:
+                    result["rotation_mode"] = data_section[0]
+                elif command_hex == CP01B_PLAYBACK_FREQ and len(data_section) >= 1:
+                    result["playback_frequency"] = data_section[0]
+                elif command_hex == CP01B_SOUND_EFFECT and len(data_section) >= 1:
+                    result["sound_effect"] = data_section[0]
+                elif command_hex == CP01B_OPERATION_MODE and len(data_section) >= 1:
+                    result["operation_mode"] = data_section[0]
+                elif command_hex == CP01B_VOLUME and len(data_section) >= 1:
+                    result["volume"] = data_section[0]
+                elif command_hex == CP01B_AUTO_COUNTDOWN and len(data_section) >= 1:
+                    result["auto_mode_countdown"] = data_section[0]
+                elif command_hex == CP01B_PROMPT_SOUND and len(data_section) >= 1:
+                    result["cp01b_prompt_sound"] = bool(data_section[0])
+                elif command_hex == CP01B_FUN_MODE and len(data_section) >= 1:
+                    result["fun_mode"] = data_section[0]
+                # TC02 (Du-TC02 laser cat teaser) DPs — real_tags 50-59
+                elif command_hex == TC02_OPERATION_MODE and len(data_section) >= 1:
+                    result["tc02_operation_mode"] = data_section[0]
+                elif command_hex == TC02_ROTATION_MODE and len(data_section) >= 1:
+                    result["tc02_rotation_mode"] = data_section[0]
+                elif command_hex == TC02_COLOR_RGB and len(data_section) >= 3:
+                    result["tc02_color_r"] = data_section[0]
+                    result["tc02_color_g"] = data_section[1]
+                    result["tc02_color_b"] = data_section[2]
+                elif command_hex == TC02_MOOD_LIGHT_MODE and len(data_section) >= 1:
+                    result["tc02_mood_light_mode"] = data_section[0]
+                elif command_hex == TC02_LED_COLOR and len(data_section) >= 1:
+                    result["tc02_led_color"] = data_section[0]
+                elif command_hex == TC02_SOUND_EFFECT and len(data_section) >= 1:
+                    result["tc02_sound_effect"] = data_section[0]
+                elif command_hex == TC02_PLAYBACK_FREQ and len(data_section) >= 1:
+                    result["tc02_playback_frequency"] = data_section[0]
+                elif command_hex == TC02_VOLUME and len(data_section) >= 1:
+                    result["tc02_volume"] = data_section[0]
+                elif command_hex == TC02_AUTO_COUNTDOWN and len(data_section) >= 2:
+                    result["tc02_auto_countdown_total"] = data_section[0]
+                    result["tc02_auto_countdown_remaining"] = data_section[1]
         except Exception as e:
             result["error"] = str(e)
 
@@ -766,28 +836,39 @@ class FeederBLEProtocol:
             )
 
     async def send_sync_time(self, dt: Optional[datetime] = None):
-        """Send current time to the device. Format: YY MM DD HH MM SS (6 bytes, year as 2 digits)."""
+        """Send current time to the device.
+
+        Standard (V1): EA 05 06 [YY MM DD HH mm ss] 00 AE
+        F14B (V2):     EA 02 07 [YY MM DD HH mm ss DOW] 00 AE
+        DOW = isoweekday() % 7 → Mon=1 … Sat=6, Sun=0
+        """
         if not await self._ensure_connected():
             return
         if dt is None:
             dt = datetime.now()
-        # 6 bytes: year%100, month, day, hour, minute, second
-        action_bytes = bytes(
-            [
-                dt.year % 100,
-                dt.month,
-                dt.day,
-                dt.hour,
-                dt.minute,
-                dt.second,
-            ]
-        )
-        command = self.encode_command(
-            CMD_SYNC_TIME, length=6, action_hex=action_bytes.hex().upper()
-        )
+        if self.device_type == "f14b":
+            dow = dt.isoweekday() % 7  # Mon=1..Sat=6, Sun=0
+            action_bytes = bytes([
+                dt.year % 100, dt.month, dt.day,
+                dt.hour, dt.minute, dt.second, dow,
+            ])
+            command = self.encode_command(
+                CMD_SYNC_TIME_F14B, length=7, action_hex=action_bytes.hex().upper()
+            )
+            _LOGGER.debug(
+                "[%s] Sync time V2 to %s dow=%d", self.device_address, dt, dow
+            )
+        else:
+            action_bytes = bytes([
+                dt.year % 100, dt.month, dt.day,
+                dt.hour, dt.minute, dt.second,
+            ])
+            command = self.encode_command(
+                CMD_SYNC_TIME, length=6, action_hex=action_bytes.hex().upper()
+            )
+            _LOGGER.debug("[%s] Sync time V1 to %s", self.device_address, dt)
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
-            _LOGGER.debug("[%s] Time synced to %s", self.device_address, dt)
             await asyncio.sleep(1)
         except Exception as exc:
             _LOGGER.warning(
@@ -854,6 +935,75 @@ class FeederBLEProtocol:
                 "[%s] Failed to query feeding status: %s",
                 self.device_address,
                 exc,
+            )
+
+    async def query_cp01b_dp(self, cmd_hex: str) -> None:
+        """Query a CP01B data-point by its command byte and wait for the notification."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(cmd_hex, length=0)
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(1.0)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] CP01B query cmd=%s failed: %s", self.device_address, cmd_hex, exc
+            )
+
+    async def set_cp01b_dp(self, cmd_hex: str, value: int) -> None:
+        """Write a 1-byte CP01B data-point."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(cmd_hex, length=1, action_hex=f"{value:02X}")
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(0.5)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] CP01B set cmd=%s val=%d failed: %s",
+                self.device_address, cmd_hex, value, exc,
+            )
+
+    async def query_tc02_dp(self, cmd_hex: str) -> None:
+        """Query a TC02 data-point by its command byte and wait for the notification."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(cmd_hex, length=0)
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(1.0)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] TC02 query cmd=%s failed: %s", self.device_address, cmd_hex, exc
+            )
+
+    async def set_tc02_dp(self, cmd_hex: str, value: int) -> None:
+        """Write a 1-byte TC02 data-point."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(cmd_hex, length=1, action_hex=f"{value:02X}")
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(0.5)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] TC02 set cmd=%s val=%d failed: %s",
+                self.device_address, cmd_hex, value, exc,
+            )
+
+    async def set_tc02_color_rgb(self, r: int, g: int, b: int) -> None:
+        """Write RGB color to TC02 (3-byte payload)."""
+        if not await self._ensure_connected():
+            return
+        action_hex = f"{r:02X}{g:02X}{b:02X}"
+        command = self.encode_command(TC02_COLOR_RGB, length=3, action_hex=action_hex)
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+            await asyncio.sleep(0.5)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] TC02 set_color_rgb(%d,%d,%d) failed: %s",
+                self.device_address, r, g, b, exc,
             )
 
     async def send_heartbeat(self) -> bool:
