@@ -1,20 +1,22 @@
-# Petnetizen Feeder BLE Library
+# petnetizen-feeder
 
-A Python BLE library for controlling Petnetizen automatic pet feeders. Suitable for use with **uv** and as a dependency for **Home Assistant** custom integrations.
+Python BLE library for controlling **Pet Netizen / CloudPets / Du** smart feeders and pet toys
+without any cloud account or app pairing. Used by the
+[netizen_ble](https://github.com/lorek123/netizen_ble) Home Assistant integration.
 
-## Features
+## Supported devices
 
-- ✅ **Manual Feed**: Trigger feeding with configurable portion count (1-15 portions)
-- ✅ **Feed Schedule**: Set automated feeding schedules with time, weekdays, and portion count
-- ✅ **Child Lock**: Enable/disable child lock to prevent accidental feeding
-- ✅ **Sound Control**: Enable/disable reminder tone/sound notifications
-- ✅ **Device Status**: Query device information, feeding status, and fault codes
-- ✅ **Autodiscovery**: Scan for feeders via BLE (`discover_feeders()`)
-- ✅ **Time sync**: Sync device clock to host time (`sync_time()`)
+| BLE name prefix | Device type | Notes |
+|---|---|---|
+| `Du-F*`, `Du-W*` | Standard feeder / water dispenser | All Du- prefix feeders |
+| `DU-F14B` | F14B | V2 protocol variant |
+| `DU-CP01B` | CP01B | Interactive ball feeder |
+| `Du-TC02` | TC02 | Laser cat teaser |
+| `JK-*` | JK feeder | Different service UUID |
+| `ALI-*` | ALI feeder | Different service UUID |
+| `PET-*`, `FEED-*` | Standard feeder | |
 
 ## Installation
-
-**From PyPI** (after [publishing](https://pypi.org/project/petnetizen-feeder/)):
 
 ```bash
 pip install petnetizen-feeder
@@ -22,285 +24,187 @@ pip install petnetizen-feeder
 uv add petnetizen-feeder
 ```
 
-**From source** (project root):
-
-```bash
-# Using uv (recommended)
-uv sync
-```
-
-This creates a virtual environment (`.venv`), installs the package in editable mode, and pins dependencies (e.g. `bleak`). Then run scripts with:
-
-```bash
-uv run python your_script.py
-```
-
-To install elsewhere (e.g. for a Home Assistant integration), use `pip install -e .` in the project root or publish to PyPI and add `petnetizen-feeder` to your integration’s dependencies.
-
-## Quick Start
+## Quick start
 
 ```python
 import asyncio
 from petnetizen_feeder import FeederDevice, FeedSchedule, Weekday
 
 async def main():
-    # Connect to device
     feeder = FeederDevice("E6:C0:07:09:A3:D3")
     await feeder.connect()
-    
-    # Manual feed with 2 portions
+
     await feeder.feed(portions=2)
-    
-    # Set schedule: 8:00 AM every day, 1 portion
-    schedules = [
-        FeedSchedule(
-            weekdays=Weekday.ALL_DAYS,
-            time="08:00",
-            portions=1,
-            enabled=True
-        )
-    ]
-    await feeder.set_schedule(schedules)
-    
-    # Toggle child lock
-    await feeder.set_child_lock(False)  # Unlock
-    
-    # Toggle sound
-    await feeder.set_sound(True)  # Enable
-    
+
+    await feeder.set_schedule([
+        FeedSchedule(weekdays=Weekday.ALL_DAYS, time="08:00", portions=1, enabled=True),
+        FeedSchedule(weekdays=Weekday.WEEKDAYS, time="18:00", portions=2, enabled=True),
+    ])
+
     await feeder.disconnect()
 
 asyncio.run(main())
 ```
 
-### Autodiscovery and reading settings
-
-Discover feeders on BLE, connect to the first one, read device info and schedule, then sync time:
-
-```bash
-uv run python examples/read_settings_and_sync_time.py
-```
+## Discovery
 
 ```python
 from petnetizen_feeder import discover_feeders, FeederDevice
 
 async def main():
-    feeders = await discover_feeders(timeout=10.0)  # [(address, name, device_type), ...]
-    if not feeders:
+    # Returns [(address, name, device_type), ...]
+    devices = await discover_feeders(timeout=10.0)
+    if not devices:
+        print("No devices found")
         return
-    address, name, device_type = feeders[0]
+
+    address, name, device_type = devices[0]
+    print(f"{name} @ {address} ({device_type})")
+
     feeder = FeederDevice(address, device_type=device_type)
     await feeder.connect()
-    info = await feeder.get_device_info()   # {"device_name": "...", "device_version": "..."}
-    schedules = await feeder.query_schedule()
-    await feeder.sync_time()                # sync device clock to now
+    info = await feeder.get_device_info()
+    print(info)  # {"device_name": "...", "device_version": "..."}
     await feeder.disconnect()
 ```
 
-## API Reference
+`device_type` values: `"standard"`, `"jk"`, `"ali"`, `"f14b"`, `"cp01b"`, `"tc02"`.
 
-### `discover_feeders(timeout: float = 10.0) -> List[Tuple[str, str, str]]`
+## API reference
 
-Scan for Petnetizen feeders via BLE. Uses an **unfiltered** BLE scan (no service-UUID filter), then recognizes feeders by **advertised name prefix** (like the Android app: `bleNames` / `getDeviceTypeByName`). Returns a list of `(address, name, device_type)` for each feeder found. `device_type` is `"standard"`, `"jk"`, or `"ali"`. Use `device_type` when constructing `FeederDevice` for correct service UUIDs. Name prefixes: `Du`, `JK`, `ALI`, `PET`, `FEED` (see `FEEDER_NAME_PREFIXES` in `protocol.py` to extend).
+### `discover_feeders(timeout=10.0)`
 
-### `FeederDevice`
+BLE scan returning `[(address, name, device_type)]`. Recognises devices by name prefix
+(`Du`, `JK`, `ALI`, `PET`, `FEED`, `TC`) — same logic as the Android app.
 
-Main class for controlling feeder devices.
+### `FeederDevice(address, verification_code="00000000", device_type=None)`
 
-#### `__init__(address: str, verification_code: str = "00000000", device_type: Optional[str] = None)`
+Main device controller. `device_type` is auto-detected from the BLE name when using
+`discover_feeders()`; pass it explicitly if you have the address only.
 
-Initialize feeder device controller.
+#### Connection
 
-- `address`: BLE device MAC address (e.g., "E6:C0:07:09:A3:D3")
-- `verification_code`: Verification code (default: "00000000")
-- `device_type`: Optional `"standard"`, `"jk"`, or `"ali"` (auto-detected from name if not set; use when discovered via `discover_feeders()`)
+| Method | Returns | Notes |
+|---|---|---|
+| `connect()` | `bool` | |
+| `disconnect()` | — | |
+| `ensure_connected()` | `bool` | Reconnects if dropped |
+| `is_connected` | `bool` | Property |
 
-#### `async connect() -> bool`
+#### Feeder control
 
-Connect to the feeder device. Returns `True` if successful.
+| Method | Returns | Notes |
+|---|---|---|
+| `feed(portions=1)` | `bool` | 1–15 portions |
+| `set_schedule(schedules)` | `bool` | List of `FeedSchedule` |
+| `query_schedule()` | `list[dict]` | Current schedule from device |
+| `sync_time(dt=None)` | — | Syncs device clock (default: now) |
+| `get_device_info()` | `dict` | `device_name`, `device_version` |
+| `factory_reset()` | `bool` | |
 
-#### `async disconnect()`
+#### State queries
 
-Disconnect from the device.
+| Method | Returns | Notes |
+|---|---|---|
+| `get_battery_level()` | `int \| None` | 0–100 % |
+| `get_child_lock_status()` | `bool \| None` | |
+| `get_prompt_sound_status()` | `bool \| None` | |
+| `get_fault_status()` | `int \| None` | 0 = ok |
+| `get_feeding_status()` | `str \| None` | |
+| `get_do_not_disturb()` | `dict \| None` | `{enabled, start_time, end_time}` |
+| `get_last_feed_result()` | `dict \| None` | Cached from last notification |
 
-#### `async feed(portions: int = 1) -> bool`
+#### Switches
 
-Trigger manual feed with specified number of portions.
+| Method | Notes |
+|---|---|
+| `set_child_lock(locked)` | |
+| `set_sound(enabled)` | Prompt sound / reminder tone |
+| `set_led(enabled)` | |
+| `set_auto_lock(enabled)` | |
+| `set_atmosphere_light(enabled)` | |
+| `set_long_ring(enabled)` | |
+| `set_do_not_disturb(enabled, start_time="22:00", end_time="08:00")` | |
 
-- `portions`: Number of portions to feed (1-15, typically 1-3)
-- Returns: `True` if feed command was acknowledged
+#### CP01B (interactive ball feeder)
 
-#### `async set_schedule(schedules: List[FeedSchedule]) -> bool`
+| Method | Notes |
+|---|---|
+| `get_cp01b_state()` | Returns dict of all CP01B DP values |
+| `set_cp01b_operation_mode(value)` | 0–5 |
+| `set_cp01b_rotation_mode(value)` | 0–5 |
+| `set_cp01b_volume(value)` | 0–100 |
+| `set_cp01b_playback_frequency(value)` | 0–10 |
+| `set_cp01b_sound_effect(value)` | 0–10 |
+| `set_cp01b_auto_mode_countdown(value)` | 0–60 minutes |
+| `set_cp01b_fun_mode(value)` | 0–10 |
+| `set_cp01b_prompt_sound(enabled)` | |
 
-Set feed schedule.
+#### TC02 (laser cat teaser)
 
-- `schedules`: List of `FeedSchedule` objects
-- Returns: `True` if command was sent successfully
+| Method | Notes |
+|---|---|
+| `get_tc02_state()` | Returns dict of all TC02 DP values |
+| `set_tc02_operation_mode(value)` | 0–5 |
+| `set_tc02_rotation_mode(value)` | 0–5 |
+| `set_tc02_color_rgb(r, g, b)` | 0–255 each channel |
+| `set_tc02_mood_light_mode(value)` | 0–10 |
+| `set_tc02_led_color(value)` | 0–255 |
+| `set_tc02_sound_effect(value)` | 0–10 |
+| `set_tc02_playback_frequency(value)` | 0–10 |
+| `set_tc02_volume(value)` | 0–100 |
+| `set_tc02_auto_mode_countdown(value)` | 0–60 minutes |
 
-#### `async set_child_lock(locked: bool) -> bool`
+### `FeedSchedule(weekdays, time, portions, enabled=True)`
 
-Set child lock state.
-
-- `locked`: `True` to lock, `False` to unlock
-- Returns: `True` if command was sent successfully
-
-#### `async set_sound(enabled: bool) -> bool`
-
-Set reminder tone/sound state.
-
-- `enabled`: `True` to enable sound, `False` to disable
-- Returns: `True` if command was sent successfully
-
-#### `async query_schedule() -> List[Dict]`
-
-Query current feed schedule. Returns list of schedule dictionaries.
-
-#### `async get_device_info() -> Dict`
-
-Query device name and firmware version. Returns `{"device_name": "...", "device_version": "..."}`.
-
-#### `async sync_time(dt: Optional[datetime] = None) -> None`
-
-Sync device clock to the given time (default: now).
-
-#### `is_connected: bool`
-
-Property to check if device is connected.
-
-### `FeedSchedule`
-
-Represents a single feed schedule entry.
-
-#### `__init__(weekdays: List[str], time: str, portions: int, enabled: bool = True)`
-
-- `weekdays`: List of weekday names (e.g., `["mon", "wed", "fri"]` or `Weekday.ALL_DAYS`)
-- `time`: Time in HH:MM format (e.g., "08:00")
-- `portions`: Number of portions to feed (1-15)
-- `enabled`: Whether this schedule is enabled
+| Param | Type | Notes |
+|---|---|---|
+| `weekdays` | `list[str]` or `Weekday` | `["mon", "wed"]` or `Weekday.ALL_DAYS` |
+| `time` | `str` | `"HH:MM"` |
+| `portions` | `int` | 1–15 |
+| `enabled` | `bool` | |
 
 ### `Weekday`
 
-Weekday constants for schedules.
+Constants: `SUNDAY`, `MONDAY`, …, `SATURDAY`, `ALL_DAYS`, `WEEKDAYS`, `WEEKEND`.
 
-- `Weekday.SUNDAY`, `Weekday.MONDAY`, etc.
-- `Weekday.ALL_DAYS`: All days of the week
-- `Weekday.WEEKDAYS`: Monday through Friday
-- `Weekday.WEEKEND`: Saturday and Sunday
+## Protocol
 
-## Examples
+Tuya BLE, EA/AE framing:
 
-### Basic Manual Feed
-
-```python
-from petnetizen_feeder import FeederDevice
-
-async def feed_pet():
-    feeder = FeederDevice("E6:C0:07:09:A3:D3")
-    await feeder.connect()
-    await feeder.feed(portions=1)
-    await feeder.disconnect()
+```
+TX: EA [cmd] [len] [data…] 00 AE
+RX: EB [cmd] [len] [data…] [crc8] AE
 ```
 
-### Set Multiple Schedules
+Service UUID `0000ae30` (standard, CP01B, TC02), `0000fff0` (JK), `0000ffff` (ALI).
+Default verification code `00000000` — no cloud pairing required.
 
-```python
-from petnetizen_feeder import FeederDevice, FeedSchedule, Weekday
-
-async def setup_schedule():
-    feeder = FeederDevice("E6:C0:07:09:A3:D3")
-    await feeder.connect()
-    
-    schedules = [
-        # Morning: 8:00 AM every day, 1 portion
-        FeedSchedule(Weekday.ALL_DAYS, "08:00", 1, True),
-        # Evening: 6:00 PM weekdays only, 2 portions
-        FeedSchedule(Weekday.WEEKDAYS, "18:00", 2, True),
-    ]
-    
-    await feeder.set_schedule(schedules)
-    await feeder.disconnect()
-```
-
-### Control Child Lock and Sound
-
-```python
-async def configure_device():
-    feeder = FeederDevice("E6:C0:07:09:A3:D3")
-    await feeder.connect()
-    
-    # Unlock device (allow manual feeding)
-    await feeder.set_child_lock(False)
-    
-    # Enable sound notifications
-    await feeder.set_sound(True)
-    
-    await feeder.disconnect()
-```
-
-## Protocol Details
-
-The library uses the Tuya BLE protocol format:
-- Commands: `EA` header + Command + Length + Data + CRC(00) + `AE` footer
-- Notifications: `EB` header + Command + Length + Data + CRC + `AE` footer
-
-Based on reverse engineering of the official Petnetizen Android app.
+Reverse engineered from the Pet Netizen Android app (JADX).
 
 ## Requirements
 
-- Python 3.12+ (aligned with current Home Assistant; see [HA version support](https://www.home-assistant.io/installation/))
-- `bleak` library for BLE communication
-- Linux: Bluetooth permissions (user in `bluetooth` group)
-- macOS: Bluetooth access permissions
-- Windows: Bluetooth adapter
-
-## Troubleshooting
-
-### Connection fails
-- Ensure Bluetooth is enabled
-- Make sure device is powered on
-- Check device address is correct
-- Try running with appropriate permissions (Linux may need `sudo` or user in `bluetooth` group)
-
-### Feed doesn't occur
-- Check child lock status (must be unlocked)
-- Verify device is not in fault state
-- Ensure device has food loaded
-- Check feeding status before feeding
-
-### Permission errors (Linux)
-```bash
-sudo usermod -aG bluetooth $USER
-# Then log out and back in
-```
+- Python 3.12+
+- `bleak` for BLE
+- Linux: user in `bluetooth` group (`sudo usermod -aG bluetooth $USER`)
 
 ## Development
 
-From the project root:
-
 ```bash
-uv sync --all-extras   # install with dev dependencies
+uv sync --all-extras
 uv run pytest tests/ -v
-uv build               # build sdist + wheel in dist/
 ```
 
-## Releasing (PyPI + GitHub)
+## Releasing
 
-1. **One-time setup**
-   - In **pyproject.toml** and **CHANGELOG.md**, replace `your-username` with your GitHub username (or org) so URLs point to your repo.
-   - On [PyPI](https://pypi.org), create an API token (Account → API tokens).
-   - In your GitHub repo: **Settings → Secrets and variables → Actions** → add secret `PYPI_API_TOKEN` with the PyPI token.
+Bump `version` in `pyproject.toml`, commit, then:
 
-2. **Cut a release**
-   - Bump `version` in **pyproject.toml** and add an entry in **CHANGELOG.md** under `[Unreleased]` / new version.
-   - Commit, push, then create and push a tag:
-   ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
-   ```
-   - The **Release** workflow runs: builds the package, publishes to PyPI, and creates a GitHub Release with generated notes and `dist/` artifacts.
+```bash
+git tag v0.x.y && git push origin v0.x.y
+```
 
-CI runs on every push/PR to `main` (or `master`) and tests Python 3.12–3.14 (aligned with current Home Assistant).
+CI publishes to PyPI automatically on tag push.
 
 ## License
 
-This library is based on reverse engineering of the Petnetizen Android app for educational and personal use. See [LICENSE](LICENSE).
+MIT — based on reverse engineering of the Petnetizen Android app for educational and personal use.
