@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.6.0] - 2026-10-25
+
+Connection stability fixes, based on measurements against a Du-W11B (fw 110) over BlueZ:
+about half of all fresh links are dropped by the feeder 2.2–3.3 s after link-up regardless
+of traffic, while a link that survives that window stays up for over two minutes with no
+traffic at all. The earlier 60 s "idle timeout" theory was wrong, and the early drop explains
+why the notify/verify order kept flipping between releases (0.3.5, 0.3.6, 0.5.3).
+
+### Changed
+
+- **Handshake order**: notifications are enabled *before* the verification code is sent,
+  matching the Android app (Nordic `BleManager.initialize` → `onDeviceReady` → send code).
+  `send_verification_code()` now waits for the feeder's `SET_FAMILY_ID` reply and returns
+  `True` (accepted), `False` (rejected) or `None` (no reply). A rejected code fails the
+  connection and is not retried.
+- **Early-drop detection**: `connect()` and `ensure_connected()` wait until 4 s after link-up
+  (`LINK_SETTLE_S`) and check the link is still up before reporting success, and retry up to
+  3 times (`CONNECT_ATTEMPTS`). Previously a dropped link was reported as "Connected" and only
+  noticed at the next heartbeat or poll.
+- `connect()` without a `ble_client` now uses the `connection_factory` when one was given
+  (previously it always created a raw `BleakClient`).
+- Heartbeat interval lowered from 60 s to 20 s. It now serves as a liveness probe; the feeder
+  does not need it to keep an idle link.
+- **Logging**: connection-setup details (service discovery, `start_notify` retries,
+  verification) are logged at DEBUG and summarised in a single WARNING per failed
+  `connect()`/`ensure_connected()` call, which includes the reason.
+
+### Added
+
+- `FeederDevice.disconnected_callback` / `FeederBLEProtocol.handle_disconnect`: bleak
+  `disconnected_callback` that logs, at INFO, the exact time an established link was dropped,
+  how long after connect, and when the last notification arrived. Clients created by the
+  library are wired up automatically; integrations pass it to `establish_connection`.
+- `FeederBLEProtocol.last_error`: reason for the most recent connection failure.
+
+### Fixed
+
+- **Heartbeat ping-pong**: the feeder answers every heartbeat with `EB 03 00 00 AE`, which the
+  0.5.6 echo logic treated as a device-initiated ping and echoed back, so each heartbeat started
+  an endless exchange. A `03` arriving within 5 s of our own heartbeat is now treated as the
+  reply and not echoed.
+
 ## [0.5.6] - 2026-05-12
 
 ### Added

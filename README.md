@@ -86,10 +86,17 @@ Main device controller. `device_type` is auto-detected from the BLE name when us
 
 | Method | Returns | Notes |
 |---|---|---|
-| `connect()` | `bool` | |
+| `connect()` | `bool` | Up to 3 attempts; returns only once the link has survived the early-drop window (~4 s) |
 | `disconnect()` | — | |
-| `ensure_connected()` | `bool` | Reconnects if dropped |
+| `ensure_connected()` | `bool` | Reconnects if dropped (up to 3 attempts, one WARNING if all fail) |
 | `is_connected` | `bool` | Property |
+| `disconnected_callback` | — | Pass to `establish_connection(..., disconnected_callback=...)` when supplying a `connection_factory`, so link drops are logged with their exact time |
+
+**Connection behaviour (measured on Du-W11B, fw 110):** the feeder drops roughly half of
+all fresh links 2–3 s after they come up, independent of traffic; a link that survives
+that window stays up for minutes even when idle. Session setup enables notifications,
+then sends the verification code (same order as the Android app, so the `EB 06 01 01`
+verdict is visible) and waits out that window before reporting success.
 
 #### Feeder control
 
@@ -178,7 +185,11 @@ RX: EB [cmd] [len] [data…] [crc8] AE
 ```
 
 Service UUID `0000ae30` (standard, CP01B, TC02), `0000fff0` (JK), `0000ffff` (ALI).
-Default verification code `00000000` — no cloud pairing required.
+Default verification code `00000000` — no cloud pairing required. The feeder answers
+`SET_FAMILY_ID` with `EB 06 01 01` (accepted) or `EB 06 01 00` (rejected); the reply is
+only visible if notifications are enabled first. Right after verification the feeder
+pushes its state unprompted (`05` time-sync request, `0E`, `09`, `0A`, `0D`, `0F`, `10`,
+`12`, then the `0C`/`0B` feed records).
 
 Reverse engineered from the Pet Netizen Android app (JADX).
 

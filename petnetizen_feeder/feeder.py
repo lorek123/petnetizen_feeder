@@ -6,6 +6,7 @@ Main library class for controlling feeder devices.
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any, List, Dict, Optional
@@ -40,6 +41,23 @@ from .protocol import (
 _LOGGER = logging.getLogger(__name__)
 
 ConnectionFactory = Callable[[], Awaitable[Any]]
+
+# Measured on a Du-W11B (fw 110) over BlueZ: roughly half of all fresh links are
+# dropped by the feeder 2.2-3.3 s after they come up, regardless of traffic.
+# Links that survive this window then stay up for minutes even when idle.
+# Session setup therefore waits this long (counted from link-up) before it
+# reports success, so an early drop is retried at once instead of being
+# discovered at the next heartbeat or poll.
+LINK_SETTLE_S = 4.0
+
+# Attempts per connect()/ensure_connected() call; with ~50% early drops,
+# three attempts succeed ~90% of the time.
+CONNECT_ATTEMPTS = 3
+
+# Pause after dropping a stale client so an ESP32 proxy can free the slot.
+STALE_RELEASE_DELAY_S = 2.0
+
+_VERIFICATION_REJECTED = "verification code rejected by feeder"
 
 # Weekday bitmask values (from FeedInfo.Companion.getWeekValue)
 WEEKDAY_BITMASK = {
@@ -147,7 +165,8 @@ class FeederDevice:
         self._connected = False
         self._reconnect_lock = asyncio.Lock()
         self._heartbeat_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
-        self._heartbeat_interval: int = 60  # seconds, matches Android app
+        # Liveness probe; the feeder does not need it to keep an idle link.
+        self._heartbeat_interval: int = 20
 
     async def connect(self, ble_client: Optional[Any] = None) -> bool:
         """
@@ -155,30 +174,23 @@ class FeederDevice:
 
         Args:
             ble_client: Optional already-connected BleakClient (e.g. from bleak_retry_connector).
-                        When provided, the library uses it instead of creating a new connection.
+                        When provided, the library uses it instead of creating a new connection
+                        and makes a single attempt.  Otherwise the connection factory (or a
+                        direct BleakClient) is used, with up to ``CONNECT_ATTEMPTS`` attempts.
 
         Returns:
             True if connection successful, False otherwise
         """
         _LOGGER.debug("Connecting to feeder %s", self.address)
-        # Establish GATT connection without enabling notifications yet.
-        if not await self._protocol.connect(
-            ble_client=ble_client, enable_notifications=False
-        ):
-            _LOGGER.warning("Failed to connect to feeder %s", self.address)
-            return False
-        # Send the verification code (CMD_SET_FAMILY_ID) BEFORE writing the
-        # CCCD to enable notifications.  The feeder's Nordic BLE firmware
-        # calls sd_ble_gatts_hvx() immediately when notifications are enabled;
-        # if the BLE link is still settling (e.g. connection-parameter
-        # negotiation in progress through an ESP32 proxy), the TX buffer is
-        # full and the firmware disconnects with HCI error 19.  Authenticating
-        # first gives the stack ~2 s to complete negotiation and puts the
-        # feeder in a known state before the CCCD write arrives.
-        await self._protocol.send_verification_code(self.verification_code)
-        if not await self._protocol.enable_notifications():
+        if ble_client is not None:
+            ok = await self._open_session(ble_client)
+        else:
+            ok = await self._open_session_with_retries()
+        if not ok:
             _LOGGER.warning(
-                "Failed to enable notifications for feeder %s", self.address
+                "Failed to connect to feeder %s: %s",
+                self.address,
+                self._protocol.last_error or "unknown error",
             )
             return False
         self._connected = True
@@ -193,6 +205,17 @@ class FeederDevice:
         Use this when the integration obtains a fresh BleakClient (e.g. via
         bleak_retry_connector) and needs to hand it to the library.
         """
+        ok = await self._reconnect_once(ble_client)
+        if not ok:
+            _LOGGER.warning(
+                "Failed to reconnect to feeder %s: %s",
+                self.address,
+                self._protocol.last_error or "unknown error",
+            )
+        return ok
+
+    async def _reconnect_once(self, ble_client: Optional[Any] = None) -> bool:
+        """One reconnect attempt; failures are logged at DEBUG only."""
         _LOGGER.debug("Reconnecting to feeder %s", self.address)
         # Set _connected=False while the reconnect is in progress so
         # is_connected returns False during the attempt.  Crucially we
@@ -201,27 +224,103 @@ class FeederDevice:
         # after a failed reconnect would permanently block all future
         # reconnection attempts until HA restarts.
         self._connected = False
-        if ble_client is not None:
-            ok_gatt = await self._protocol.replace_client(
-                ble_client, enable_notifications=False
-            )
-        else:
-            ok_gatt = await self._protocol.connect(enable_notifications=False)
-        if not ok_gatt:
-            self._connected = True  # allow ensure_connected() to retry
-            _LOGGER.warning("Failed to reconnect to feeder %s", self.address)
-            return False
-        await self._protocol.send_verification_code(self.verification_code)
-        if not await self._protocol.enable_notifications():
-            self._connected = True  # allow ensure_connected() to retry
-            _LOGGER.warning(
-                "Failed to enable notifications for feeder %s", self.address
+        ok = await self._open_session(ble_client, replace=True)
+        self._connected = True  # on failure: allow ensure_connected() to retry
+        if not ok:
+            _LOGGER.debug(
+                "Reconnect attempt to feeder %s failed: %s",
+                self.address,
+                self._protocol.last_error,
             )
             return False
-        self._connected = True
         self._start_heartbeat()
         _LOGGER.info("Reconnected to feeder %s", self.address)
         return True
+
+    async def _open_session_with_retries(self) -> bool:
+        """Obtain a client (factory or direct) and open a session, retrying."""
+        for attempt in range(1, CONNECT_ATTEMPTS + 1):
+            ble_client = None
+            if self._connection_factory is not None:
+                try:
+                    ble_client = await self._connection_factory()
+                except Exception as exc:
+                    self._protocol.last_error = f"BLE connect failed: {exc}"
+            if self._connection_factory is None or ble_client is not None:
+                if await self._open_session(ble_client, replace=True):
+                    return True
+                if self._protocol.last_error == _VERIFICATION_REJECTED:
+                    return False  # retrying the same code cannot help
+            _LOGGER.debug(
+                "Connect attempt %d/%d to feeder %s failed: %s",
+                attempt,
+                CONNECT_ATTEMPTS,
+                self.address,
+                self._protocol.last_error,
+            )
+            if attempt < CONNECT_ATTEMPTS:
+                await self._release_stale_connection()
+        return False
+
+    async def _open_session(
+        self, ble_client: Optional[Any], replace: bool = False
+    ) -> bool:
+        """Bring up GATT, notifications and authentication on one link.
+
+        Order matches the Android app (Nordic BleManager): enable
+        notifications first, then send the verification code, so the
+        feeder's SET_FAMILY_ID verdict (EB 06 01 01) can be seen.
+        """
+        protocol = self._protocol
+        if replace and ble_client is not None:
+            ok_gatt = await protocol.replace_client(
+                ble_client, enable_notifications=False
+            )
+        else:
+            ok_gatt = await protocol.connect(
+                ble_client=ble_client, enable_notifications=False
+            )
+        if not ok_gatt:
+            return False
+        if not await protocol.enable_notifications():
+            return False
+        verified = await protocol.send_verification_code(self.verification_code)
+        if verified is False:
+            protocol.last_error = _VERIFICATION_REJECTED
+            await self._close_quietly()
+            return False
+        if verified is None:
+            _LOGGER.debug(
+                "No verification reply from feeder %s; continuing", self.address
+            )
+        # Wait out the early-drop window (see LINK_SETTLE_S).
+        if protocol.connected_at is not None:
+            remaining = LINK_SETTLE_S - (time.monotonic() - protocol.connected_at)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+        if protocol.client is None or not protocol.client.is_connected:
+            after = protocol.dropped_after
+            protocol.last_error = "feeder dropped the link during setup" + (
+                f" ({after:.1f}s after connecting)" if after is not None else ""
+            )
+            return False
+        protocol.session_ready = True
+        return True
+
+    async def _close_quietly(self) -> None:
+        try:
+            await self._protocol.disconnect()
+        except Exception:
+            pass
+
+    def disconnected_callback(self, client: Any) -> None:
+        """Bleak ``disconnected_callback`` that logs the exact drop time at INFO.
+
+        Pass it to whatever creates the BleakClient, e.g.
+        ``establish_connection(BleakClient, dev, name, disconnected_callback=feeder.disconnected_callback)``.
+        Clients created by the library itself are wired up automatically.
+        """
+        self._protocol.handle_disconnect(client)
 
     async def disconnect(self):
         """Disconnect from the device"""
@@ -252,12 +351,11 @@ class FeederDevice:
         self._heartbeat_task = None
 
     async def _heartbeat_loop(self) -> None:
-        """Send CMD_HEARTBEAT every 60 s, mirroring the Android app.
+        """Send CMD_HEARTBEAT every ``_heartbeat_interval`` seconds.
 
         The loop stops when the connection drops or ``disconnect()`` is called.
         The coordinator's poll (every 60 s) and ``ensure_connected()`` handle
-        recovery; the heartbeat is purely a keep-alive so the feeder firmware
-        does not consider the BLE link idle and close it.
+        recovery; the heartbeat only verifies the link is still writable.
         """
         try:
             while True:
@@ -298,27 +396,41 @@ class FeederDevice:
             if self.is_connected:
                 return True
             _LOGGER.info("Feeder %s disconnected, attempting reconnect", self.address)
-            try:
-                if self._connection_factory:
-                    # Cancel the heartbeat before touching the connection so
-                    # no writes race with the slot-release / new-connect flow.
-                    self._cancel_heartbeat()
-                    # Release the stale connection slot on the proxy BEFORE
-                    # opening a new one.  Without this the ESP32 proxy leaks
-                    # slots (max ~3) until it's completely stuck.
-                    await self._release_stale_connection()
-                    ble_client = await self._connection_factory()
-                    ok = await self.reconnect(ble_client=ble_client)
-                else:
-                    ok = await self.reconnect()
-                return ok
-            except Exception as exc:
-                _LOGGER.warning(
-                    "Reconnection to feeder %s failed: %s",
+            # Cancel the heartbeat before touching the connection so no
+            # writes race with the slot-release / new-connect flow.
+            self._cancel_heartbeat()
+            for attempt in range(1, CONNECT_ATTEMPTS + 1):
+                try:
+                    if self._connection_factory:
+                        # Release the stale connection slot on the proxy BEFORE
+                        # opening a new one.  Without this the ESP32 proxy leaks
+                        # slots (max ~3) until it's completely stuck.
+                        await self._release_stale_connection()
+                        ble_client = await self._connection_factory()
+                        ok = await self._reconnect_once(ble_client=ble_client)
+                    else:
+                        ok = await self._reconnect_once()
+                except Exception as exc:
+                    self._protocol.last_error = f"BLE connect failed: {exc}"
+                    ok = False
+                if ok:
+                    return True
+                if self._protocol.last_error == _VERIFICATION_REJECTED:
+                    break  # retrying the same code cannot help
+                _LOGGER.debug(
+                    "Reconnect attempt %d/%d to feeder %s failed: %s",
+                    attempt,
+                    CONNECT_ATTEMPTS,
                     self.address,
-                    exc,
+                    self._protocol.last_error,
                 )
-                return False
+            _LOGGER.warning(
+                "Reconnection to feeder %s failed after %d attempt(s): %s",
+                self.address,
+                attempt,
+                self._protocol.last_error or "unknown error",
+            )
+            return False
 
     async def _release_stale_connection(self) -> None:
         """Tell the BLE proxy to release any stale connection to this device.
@@ -332,6 +444,7 @@ class FeederDevice:
         client = self._protocol.client
         if client is None:
             return
+        self._protocol._expected_disconnect = True
         try:
             try:
                 await client.disconnect()
@@ -343,7 +456,7 @@ class FeederDevice:
             )
         finally:
             self._protocol.client = None
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(STALE_RELEASE_DELAY_S)
 
     async def feed(self, portions: int = 1, *, fast: bool = True) -> bool:
         """

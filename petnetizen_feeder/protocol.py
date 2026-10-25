@@ -6,6 +6,7 @@ This module handles the Tuya BLE protocol encoding/decoding and device communica
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import Optional, List, Tuple
 from bleak import BleakClient, BleakScanner
@@ -27,6 +28,13 @@ ALI_FEEDER_WRITE_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"
 ALI_FEEDER_NOTIFY_UUID = "0000ff02-0000-1000-8000-00805f9b34fb"
 
 DEFAULT_VERIFICATION_CODE = "00000000"
+
+# A device-initiated CMD_HEARTBEAT arriving this soon after we sent one is the
+# feeder's reply to ours, not a ping that needs an echo.
+HEARTBEAT_ACK_WINDOW_S = 5.0
+
+# How long send_verification_code() waits for the SET_FAMILY_ID reply.
+VERIFICATION_REPLY_TIMEOUT_S = 2.0
 
 # Command IDs
 CMD_QUERY_NAME_VERSION = "00"
@@ -175,6 +183,19 @@ class FeederBLEProtocol:
         self.supports_write_response = False
         self.supports_write_no_response = True
         self.last_feed_result: Optional[dict] = None
+
+        # Link bookkeeping, used to log exactly when and how a link died.
+        self.connected_at: Optional[float] = None  # time.monotonic()
+        self.last_notification_at: Optional[float] = None
+        self.last_error: Optional[str] = None
+        # Set by FeederDevice once the session is fully up; drops before that
+        # are part of connection setup and only logged at DEBUG.
+        self.session_ready = False
+        self.dropped_after: Optional[float] = None  # seconds after link-up
+        self._expected_disconnect = False
+        self._last_heartbeat_sent_at: Optional[float] = None
+        self._verification_result: Optional[bool] = None
+        self._verification_event = asyncio.Event()
 
     def hex_string_to_bytes(self, hex_string: str) -> bytes:
         """Convert hex string to bytes"""
@@ -455,9 +476,16 @@ class FeederBLEProtocol:
             len(data),
         )
         self.received_data.append(data)
+        self.last_notification_at = time.monotonic()
 
         if len(data) >= 2:
             cmd = f"{data[1]:02X}"
+
+            # Reply to SET_FAMILY_ID: data byte 01 = verification code accepted.
+            # Only visible when notifications are enabled before the code is sent.
+            if cmd == "06" and len(data) >= 4:
+                self._verification_result = data[3] == 1
+                self._verification_event.set()
 
             # Track last completed manual feed result inline so it's always current
             if cmd == "0C":
@@ -482,7 +510,18 @@ class FeederBLEProtocol:
             # Some firmware builds initiate CMD_HEARTBEAT ("03") from the device side
             # and expect an echo ACK.  The Android product-test controller replies with
             # the same command / length 0.  We mirror that here to keep parity.
+            # The feeder also answers each of *our* heartbeats with EB 03 00 00 AE;
+            # echoing that would ping-pong forever, so ignore replies to ours.
             elif cmd == "03":
+                sent_at = self._last_heartbeat_sent_at
+                if (
+                    sent_at is not None
+                    and time.monotonic() - sent_at < HEARTBEAT_ACK_WINDOW_S
+                ):
+                    _LOGGER.debug(
+                        "[%s] Heartbeat acknowledged", self.device_address
+                    )
+                    return
                 _LOGGER.debug(
                     "[%s] Device heartbeat ping — scheduling echo ACK",
                     self.device_address,
@@ -531,7 +570,8 @@ class FeederBLEProtocol:
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             if not self.client.is_connected:
-                _LOGGER.warning(
+                self.last_error = "link dropped before notifications were enabled"
+                _LOGGER.debug(
                     "[%s] Device disconnected before start_notify (attempt %d)",
                     self.device_address,
                     attempt,
@@ -551,7 +591,8 @@ class FeederBLEProtocol:
                 )
                 return True
             except Exception as exc:
-                _LOGGER.warning(
+                self.last_error = f"enabling notifications failed: {exc}"
+                _LOGGER.debug(
                     "[%s] start_notify failed (attempt %d/%d): %s",
                     self.device_address,
                     attempt,
@@ -572,7 +613,18 @@ class FeederBLEProtocol:
         ble_client: Optional[BleakClient] = None,
         enable_notifications: bool = True,
     ) -> bool:
-        """Connect to the device. If ble_client is provided (e.g. from bleak_retry_connector), use it."""
+        """Connect to the device. If ble_client is provided (e.g. from bleak_retry_connector), use it.
+
+        Failure details are logged at DEBUG and kept in ``last_error``; the
+        caller decides whether a failure is worth a warning.
+        """
+        self.last_error = None
+        self.session_ready = False
+        self.connected_at = None
+        self.dropped_after = None
+        self._expected_disconnect = False
+        self._verification_result = None
+        self._verification_event.clear()
         if ble_client is not None:
             _LOGGER.debug("[%s] Using provided BleakClient", self.device_address)
             self.client = ble_client
@@ -582,16 +634,23 @@ class FeederBLEProtocol:
                 self.device_address,
                 timeout,
             )
-            self.client = BleakClient(self.device_address, timeout=timeout)
+            self.client = BleakClient(
+                self.device_address,
+                disconnected_callback=self.handle_disconnect,
+                timeout=timeout,
+            )
             try:
                 await self.client.connect()
             except Exception as exc:
-                _LOGGER.warning(
+                self.last_error = f"BLE connect failed: {exc}"
+                _LOGGER.debug(
                     "[%s] BLE connect failed: %s",
                     self.device_address,
                     exc,
                 )
                 return False
+        self.connected_at = time.monotonic()
+        self.last_notification_at = None
 
         # Access GATT services discovered during connect().  Modern bleak (0.20+)
         # and HaBleakClientWrapper (bleak-retry-connector) expose services via
@@ -603,7 +662,8 @@ class FeederBLEProtocol:
                     "Service discovery not complete – no services available"
                 )
         except Exception as exc:
-            _LOGGER.warning(
+            self.last_error = f"service discovery failed: {exc}"
+            _LOGGER.debug(
                 "[%s] Service discovery failed: %s",
                 self.device_address,
                 exc,
@@ -613,7 +673,8 @@ class FeederBLEProtocol:
         try:
             service = services.get_service(self.service_uuid)
             if not service:
-                _LOGGER.warning(
+                self.last_error = f"service {self.service_uuid} not found on device"
+                _LOGGER.debug(
                     "[%s] Service %s not found on device",
                     self.device_address,
                     self.service_uuid,
@@ -624,7 +685,8 @@ class FeederBLEProtocol:
             notify_char = service.get_characteristic(self.notify_uuid)
 
             if not write_char or not notify_char:
-                _LOGGER.warning(
+                self.last_error = "required characteristics not found"
+                _LOGGER.debug(
                     "[%s] Required characteristics not found (write=%s, notify=%s)",
                     self.device_address,
                     write_char is not None,
@@ -653,14 +715,15 @@ class FeederBLEProtocol:
             _LOGGER.debug("[%s] MTU: %d", self.device_address, mtu)
 
             if not enable_notifications:
-                # Caller will authenticate (send verification code) and then
-                # call enable_notifications() before using the connection.
+                # Caller will enable notifications and then authenticate
+                # (send the verification code) before using the connection.
                 return True
 
             return await self._do_start_notify()
 
         except Exception as exc:
-            _LOGGER.warning(
+            self.last_error = f"post-connect setup failed: {exc}"
+            _LOGGER.debug(
                 "[%s] Post-connect setup failed: %s",
                 self.device_address,
                 exc,
@@ -771,6 +834,7 @@ class FeederBLEProtocol:
 
     async def disconnect(self):
         """Disconnect from the device"""
+        self._expected_disconnect = True
         if self.client and self.client.is_connected:
             _LOGGER.debug("[%s] Disconnecting", self.device_address)
             try:
@@ -792,6 +856,7 @@ class FeederBLEProtocol:
         self, ble_client: BleakClient, enable_notifications: bool = True
     ) -> bool:
         """Replace BleakClient with a freshly connected one (for integration-level reconnection)."""
+        self._expected_disconnect = True
         if self.client:
             try:
                 if self.client.is_connected:
@@ -806,19 +871,79 @@ class FeederBLEProtocol:
             ble_client=ble_client, enable_notifications=enable_notifications
         )
 
-    async def send_verification_code(self, code: str = DEFAULT_VERIFICATION_CODE):
-        """Send verification code to the device"""
+    async def send_verification_code(
+        self, code: str = DEFAULT_VERIFICATION_CODE
+    ) -> Optional[bool]:
+        """Send the verification code and wait for the feeder's verdict.
+
+        Notifications must already be enabled, otherwise the SET_FAMILY_ID
+        reply is lost.  Returns True if the code was accepted, False if it was
+        rejected, or None if the write failed or no reply arrived in time.
+        """
         command = self.encode_command(CMD_SET_FAMILY_ID, length=4, action_hex=code)
+        self._verification_result = None
+        self._verification_event.clear()
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
             _LOGGER.debug("[%s] Verification code sent", self.device_address)
-            await asyncio.sleep(2)
         except Exception as exc:
-            _LOGGER.warning(
+            self.last_error = f"sending verification code failed: {exc}"
+            _LOGGER.debug(
                 "[%s] Failed to send verification code: %s",
                 self.device_address,
                 exc,
             )
+            return None
+        try:
+            await asyncio.wait_for(
+                self._verification_event.wait(), VERIFICATION_REPLY_TIMEOUT_S
+            )
+        except TimeoutError:
+            _LOGGER.debug(
+                "[%s] No verification reply within %.1fs",
+                self.device_address,
+                VERIFICATION_REPLY_TIMEOUT_S,
+            )
+            return None
+        _LOGGER.debug(
+            "[%s] Verification code %s",
+            self.device_address,
+            "accepted" if self._verification_result else "rejected",
+        )
+        return self._verification_result
+
+    def handle_disconnect(self, client: BleakClient) -> None:
+        """Bleak ``disconnected_callback``: log when and how the link died.
+
+        Pass this (or ``FeederDevice.disconnected_callback``) to whatever
+        creates the BleakClient, e.g. ``establish_connection``.
+        """
+        if client is not self.client:
+            return  # a client we already replaced
+        now = time.monotonic()
+        if self._expected_disconnect:
+            _LOGGER.debug("[%s] BLE link closed", self.device_address)
+            return
+        if self.connected_at is not None:
+            self.dropped_after = now - self.connected_at
+        since_connect = (
+            f"{self.dropped_after:.1f}s after connect"
+            if self.dropped_after is not None
+            else "while connecting"
+        )
+        since_rx = (
+            f"{now - self.last_notification_at:.1f}s ago"
+            if self.last_notification_at
+            else "never"
+        )
+        _LOGGER.log(
+            logging.INFO if self.session_ready else logging.DEBUG,
+            "[%s] BLE link dropped by feeder at %s, %s (last notification: %s)",
+            self.device_address,
+            datetime.now().isoformat(timespec="milliseconds"),
+            since_connect,
+            since_rx,
+        )
 
     async def query_name_version(self):
         """Query device name and firmware version (response via notification, command 00)."""
@@ -1009,9 +1134,9 @@ class FeederBLEProtocol:
     async def send_heartbeat(self) -> bool:
         """Send a heartbeat packet (CMD_HEARTBEAT, no payload) to keep the BLE link alive.
 
-        The Android app sends this every 60 s while connected.  Sending it
-        prevents the feeder's firmware from treating the connection as idle
-        and dropping it.
+        The feeder answers with EB 03 00 00 AE.  Measured on a Du-W11B
+        (fw 110), an established link survives well over two minutes with no
+        traffic at all, so this is a liveness probe more than a keep-alive.
 
         Returns True if the write succeeded, False otherwise (connection lost).
         """
@@ -1019,6 +1144,7 @@ class FeederBLEProtocol:
             return False
         command = self.encode_command(CMD_HEARTBEAT, length=0)
         try:
+            self._last_heartbeat_sent_at = time.monotonic()
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
             _LOGGER.debug("[%s] Heartbeat sent", self.device_address)
             return True
