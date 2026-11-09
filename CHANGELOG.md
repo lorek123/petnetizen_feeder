@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.6.1] - 2026-11-09
+
+### Changed
+
+- **Docs only, no behaviour change.** The 0.6.0 notes said the feeder drops about half of all
+  fresh links 2–3 s after link-up. That was measured in one session (2026-10-25); a re-test on
+  2026-11-09 saw no such drops in 20 attempts, and the cause is unknown. The settle-and-retry
+  logic stays as a safeguard; code comments and README are reworded accordingly.
+- README: ESPHome Bluetooth proxies work with ESPHome 2026.10.0 (tested with all of 0.4.1,
+  0.5.7 and 0.6.0); the same proxy failed at notification setup before that update.
+
 ## [0.6.0] - 2026-10-25
 
 Connection stability fixes, based on measurements against a Du-W11B (fw 110) over BlueZ:

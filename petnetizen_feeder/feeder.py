@@ -42,16 +42,14 @@ _LOGGER = logging.getLogger(__name__)
 
 ConnectionFactory = Callable[[], Awaitable[Any]]
 
-# Measured on a Du-W11B (fw 110) over BlueZ: roughly half of all fresh links are
-# dropped by the feeder 2.2-3.3 s after they come up, regardless of traffic.
-# Links that survive this window then stay up for minutes even when idle.
-# Session setup therefore waits this long (counted from link-up) before it
-# reports success, so an early drop is retried at once instead of being
-# discovered at the next heartbeat or poll.
+# In one session (Du-W11B, fw 110, BlueZ) about half of fresh links were dropped
+# 2.2-3.3 s after link-up; a later session saw none in 20 attempts, so the
+# cause is unknown.  Session setup still waits this long (counted from link-up)
+# before reporting success, so a link that dies right away is retried at once
+# instead of being discovered at the next heartbeat or poll.
 LINK_SETTLE_S = 4.0
 
-# Attempts per connect()/ensure_connected() call; with ~50% early drops,
-# three attempts succeed ~90% of the time.
+# Attempts per connect()/ensure_connected() call.
 CONNECT_ATTEMPTS = 3
 
 # Pause after dropping a stale client so an ESP32 proxy can free the slot.
@@ -293,7 +291,7 @@ class FeederDevice:
             _LOGGER.debug(
                 "No verification reply from feeder %s; continuing", self.address
             )
-        # Wait out the early-drop window (see LINK_SETTLE_S).
+        # Make sure the link outlives the settle window (see LINK_SETTLE_S).
         if protocol.connected_at is not None:
             remaining = LINK_SETTLE_S - (time.monotonic() - protocol.connected_at)
             if remaining > 0:

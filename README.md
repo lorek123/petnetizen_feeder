@@ -86,17 +86,21 @@ Main device controller. `device_type` is auto-detected from the BLE name when us
 
 | Method | Returns | Notes |
 |---|---|---|
-| `connect()` | `bool` | Up to 3 attempts; returns only once the link has survived the early-drop window (~4 s) |
+| `connect()` | `bool` | Up to 3 attempts; returns only once the link has stayed up for ~4 s |
 | `disconnect()` | — | |
 | `ensure_connected()` | `bool` | Reconnects if dropped (up to 3 attempts, one WARNING if all fail) |
 | `is_connected` | `bool` | Property |
 | `disconnected_callback` | — | Pass to `establish_connection(..., disconnected_callback=...)` when supplying a `connection_factory`, so link drops are logged with their exact time |
 
-**Connection behaviour (measured on Du-W11B, fw 110):** the feeder drops roughly half of
-all fresh links 2–3 s after they come up, independent of traffic; a link that survives
-that window stays up for minutes even when idle. Session setup enables notifications,
-then sends the verification code (same order as the Android app, so the `EB 06 01 01`
-verdict is visible) and waits out that window before reporting success.
+**Connection behaviour (Du-W11B, fw 110):** session setup enables notifications, then
+sends the verification code (same order as the Android app, so the `EB 06 01 01` verdict
+is visible). The feeder drops links that never send the code within ~4–5 s; an
+authenticated link stays up for minutes even when idle. Setup waits until ~4 s after
+link-up before reporting success and retries if the link died, because one test session
+saw about half of fresh links dropped 2–3 s after link-up (not reproduced since).
+
+Tested through an ESPHome Bluetooth proxy running ESPHome 2026.10.0. Before that update,
+the same proxy failed every connection while enabling notifications (error 19).
 
 #### Feeder control
 
