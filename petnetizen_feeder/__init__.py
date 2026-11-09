@@ -42,12 +42,18 @@ from .feeder import (
     Weekday,
     discover_feeders,
 )
+from .models import MODEL_FEATURES, ModelFeatures, model_features
+from .protocol import decode_fault_flags
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 __all__ = [
     "ConnectionFactory",
     "FeederDevice",
     "FeedSchedule",
+    "MODEL_FEATURES",
+    "ModelFeatures",
     "Weekday",
+    "decode_fault_flags",
     "discover_feeders",
+    "model_features",
 ]

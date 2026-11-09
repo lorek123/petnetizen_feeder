@@ -355,3 +355,13 @@ async def test_unanswered_query_is_not_resent_in_the_same_session():
     assert asyncio.get_running_loop().time() - t < 0.1
     assert [w for w in client.writes if w[1] == 0x17] == queries  # not re-sent
     await feeder.disconnect()
+
+
+async def test_power_mode_is_served_from_pushed_state():
+    client = FakeClient(push_after_verify=PUSHED_STATE)
+    feeder, _ = make_feeder([client])
+    assert await feeder.connect()
+    writes = len(client.writes)
+    assert await feeder.get_power_mode() == "DC Power"
+    assert len(client.writes) == writes
+    await feeder.disconnect()

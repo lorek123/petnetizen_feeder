@@ -163,6 +163,19 @@ async def discover_feeders(timeout: float = 10.0) -> List[Tuple[str, str, str]]:
     return result
 
 
+def decode_fault_flags(fault_code: int) -> dict:
+    """Split a FAULT (0A) code into the problems the app shows (FeederFaultBean bits).
+
+    The app treats ``low_battery`` as meaningful only while running on batteries.
+    """
+    return {
+        "stuck_grain": bool(fault_code & 0x01),
+        "food_blocked": bool(fault_code & 0x02),
+        "out_of_food": bool(fault_code & 0x04),
+        "low_battery": bool(fault_code & 0x10),
+    }
+
+
 class FeederBLEProtocol:
     """Low-level BLE protocol handler for feeder devices"""
 
@@ -1073,6 +1086,21 @@ class FeederBLEProtocol:
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] Failed to query fault status: %s",
+                self.device_address,
+                exc,
+            )
+
+
+    async def query_power_mode(self):
+        """Query power source (response via notification, command 0E)"""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(CMD_POWER_SUPPLY_METHOD, length=0)
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to query power source: %s",
                 self.device_address,
                 exc,
             )

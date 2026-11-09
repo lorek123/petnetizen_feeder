@@ -813,6 +813,14 @@ class FeederDevice:
         _LOGGER.debug("Fault status: %s", decoded["fault_code"])
         return decoded["fault_code"]
 
+    async def get_power_mode(self) -> Optional[str]:
+        """Query power source. Returns "Battery", "DC Power", or None."""
+        decoded = await self._query_state(self._protocol.query_power_mode, "0E")
+        if decoded is None or "power_mode" not in decoded:
+            _LOGGER.debug("No power source response received within 1.5s")
+            return None
+        return decoded["power_mode"]
+
     async def get_feeding_status(self) -> Optional[str]:
         """Query current feeding status. Returns 'idle', 'feeding', 'error', or None."""
         decoded = await self._query_state(self._protocol.query_feeding_status, "09")

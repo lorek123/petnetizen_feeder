@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.8.0] - 2026-11-09
+
+### Added
+
+- `model_features(ble_name)` and `MODEL_FEATURES`: which optional features each model has (child
+  lock, prompt sound, LED, auto-lock, do-not-disturb, atmosphere light, power source, battery %),
+  generated from the Pet Netizen app's `ble-device-type.json` (app 2.3.6). A feature counts only
+  when the app enables it for the model and the model's DP mapping uses the command code this
+  library sends. Returns None for unknown models.
+- `decode_fault_flags(code)`: splits the FAULT (0A) code into stuck grain (bit 0), food blocked
+  (bit 1), out of food (bit 2) and low battery (bit 4), as the app does.
+- `FeederDevice.get_power_mode()` and `FeederBLEProtocol.query_power_mode()` (CMD 0E). Served from
+  the value the feeder pushes after connecting when fresh.
+
 ## [0.7.0] - 2026-11-09
 
 Much faster connect and polling. Measured on a Du-W11B (fw 110) over BlueZ: connect plus one full

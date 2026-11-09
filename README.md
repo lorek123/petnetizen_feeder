@@ -184,6 +184,19 @@ the same proxy failed every connection while enabling notifications (error 19).
 
 Constants: `SUNDAY`, `MONDAY`, …, `SATURDAY`, `ALL_DAYS`, `WEEKDAYS`, `WEEKEND`.
 
+## Model features
+
+```python
+from petnetizen_feeder import model_features, decode_fault_flags
+
+f = model_features("Du-W11B_E6C00709A3D3")   # advertised BLE name
+f.child_lock, f.do_not_disturb               # True, False
+decode_fault_flags(0x05)                     # stuck_grain + out_of_food
+```
+
+`model_features()` mirrors the Pet Netizen app's per-model feature list and returns
+`None` for models it doesn't know.
+
 ## Protocol
 
 Tuya BLE, EA/AE framing:
