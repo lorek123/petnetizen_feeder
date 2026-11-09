@@ -1121,6 +1121,27 @@ class FeederDevice:
             self._protocol.set_tc02_dp(TC02_AUTO_COUNTDOWN, value),
         )
 
+    def add_state_listener(
+        self, listener: Callable[[Dict[str, Any]], None]
+    ) -> Callable[[], None]:
+        """Call ``listener`` with the decoded fields of every state notification.
+
+        Covers both replies to queries and values the feeder pushes on its own,
+        e.g. the child lock re-locking itself, feeding status changes, faults,
+        or feed records after a feed.  Keys are the same as in
+        ``FeederBLEProtocol.decode_notification`` (``child_lock``,
+        ``feeding_status_text``, ``fault_code``, ``feed_records``, ...).
+        Runs in the event loop; must not block.  Returns an unsubscribe function.
+        """
+        listeners = self._protocol._state_listeners
+        listeners.append(listener)
+
+        def remove() -> None:
+            if listener in listeners:
+                listeners.remove(listener)
+
+        return remove
+
     @property
     def last_error(self) -> Optional[str]:
         """Why the most recent connection attempt failed, or None."""

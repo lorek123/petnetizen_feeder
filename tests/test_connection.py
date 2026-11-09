@@ -460,3 +460,42 @@ def test_clock_is_passed_to_protocol():
     clock = lambda: datetime(2026, 1, 1)  # noqa: E731
     feeder = FeederDevice(ADDRESS, device_type="standard", clock=clock)
     assert feeder._protocol.clock is clock
+
+
+async def test_state_listener_gets_pushed_changes():
+    """E.g. a Du-W11B re-locking its buttons on its own a few seconds after unlock."""
+    client = FakeClient(push_after_verify=PUSHED_STATE)
+    feeder, _ = make_feeder([client])
+    seen = []
+    remove = feeder.add_state_listener(seen.append)
+    assert await feeder.connect()
+    assert {"child_lock": 1, "child_lock_text": "LOCKED"} in seen  # initial push
+
+    seen.clear()
+    client._notify(frame(0x0D, 0x01))  # feeder re-locks itself
+    assert seen == [{"child_lock": 1, "child_lock_text": "LOCKED"}]
+
+    # Feed records arrive with the newest feed already tracked.
+    seen.clear()
+    client._notify(frame(0x0C, 26, 11, 10, 0, 0, 39, 1, 1, 0))
+    assert seen[0]["feed_records"][0]["timestamp"] == "2026-11-10 00:00:39"
+    assert feeder.get_last_feed_result()["timestamp"] == "2026-11-10 00:00:39"
+
+    remove()
+    remove()  # idempotent
+    client._notify(frame(0x0D, 0x00))
+    assert len(seen) == 1
+    await feeder.disconnect()
+
+
+async def test_failing_state_listener_does_not_break_others(caplog):
+    client = FakeClient()
+    feeder, _ = make_feeder([client])
+    seen = []
+    feeder.add_state_listener(lambda fields: 1 / 0)
+    feeder.add_state_listener(seen.append)
+    assert await feeder.connect()
+    client._notify(frame(0x0D, 0x00))
+    assert seen[-1]["child_lock"] == 0
+    assert "State listener failed" in caplog.text
+    await feeder.disconnect()

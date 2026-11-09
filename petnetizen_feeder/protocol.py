@@ -231,6 +231,7 @@ class FeederBLEProtocol:
         self.last_state: dict = {}
         self.last_seen: dict = {}
         self._waiters: list = []  # (frozenset of command codes, Future)
+        self._state_listeners: list = []  # callables taking the decoded state fields
 
     def hex_string_to_bytes(self, hex_string: str) -> bytes:
         """Convert hex string to bytes"""
@@ -518,12 +519,25 @@ class FeederBLEProtocol:
         code = decoded.get("command")
         if code and "error" not in decoded:
             self.last_seen[code] = now
-            self.last_state.update(
-                {k: v for k, v in decoded.items() if k not in _FRAME_KEYS}
-            )
+            fields = {k: v for k, v in decoded.items() if k not in _FRAME_KEYS}
+            self.last_state.update(fields)
+            # Track the newest feed (manual 0C or scheduled 0B) across all reports.
+            if decoded.get("feed_records"):
+                newest = max(decoded["feed_records"], key=lambda r: r["timestamp"])
+                current = self.last_feed_result
+                if current is None or newest["timestamp"] >= current["timestamp"]:
+                    self.last_feed_result = newest
             for codes, fut in self._waiters:
                 if code in codes and not fut.done():
                     fut.set_result(decoded)
+            if fields:
+                for listener in list(self._state_listeners):
+                    try:
+                        listener(fields)
+                    except Exception:
+                        _LOGGER.exception(
+                            "[%s] State listener failed", self.device_address
+                        )
 
         if len(data) >= 2:
             cmd = f"{data[1]:02X}"
@@ -534,18 +548,11 @@ class FeederBLEProtocol:
                 self._verification_result = data[3] == 1
                 self._verification_event.set()
 
-            # Track the newest feed (manual 0C or scheduled 0B) across all reports.
-            if cmd in ("0B", "0C") and decoded.get("feed_records"):
-                newest = max(decoded["feed_records"], key=lambda r: r["timestamp"])
-                current = self.last_feed_result
-                if current is None or newest["timestamp"] >= current["timestamp"]:
-                    self.last_feed_result = newest
-
             # The feeder firmware pushes CMD_SYNC_TIME ("05") as a device-initiated
             # request for the current time.  The Android app responds immediately via
             # BleSyncTimeCodec.handlerController → BleDeviceController.syncTime().
             # If we ignore it the feeder clock stays wrong (e.g. after a power outage).
-            elif cmd == "05":
+            if cmd == "05":
                 _LOGGER.debug(
                     "[%s] Device requested time sync — scheduling auto-response",
                     self.device_address,

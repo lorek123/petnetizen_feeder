@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.11.0] - 2026-11-10
+
+### Added
+
+- `FeederDevice.add_state_listener(callback)`: called with the decoded fields of every state
+  notification, including values the feeder pushes on its own (e.g. a Du-W11B re-locking its
+  buttons a few seconds after being unlocked, feeding status going from feeding to done, faults,
+  feed records). Returns an unsubscribe function.
+
+### Changed
+
+- The newest feed result is tracked before state listeners run, so they see it.
+
 ## [0.10.0] - 2026-11-09
 
 ### Added
