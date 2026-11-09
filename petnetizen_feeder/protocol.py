@@ -179,10 +179,17 @@ def decode_fault_flags(fault_code: int) -> dict:
 class FeederBLEProtocol:
     """Low-level BLE protocol handler for feeder devices"""
 
-    def __init__(self, device_address: str, device_type: Optional[str] = None):
+    def __init__(
+        self,
+        device_address: str,
+        device_type: Optional[str] = None,
+        clock: Optional[Callable[[], datetime]] = None,
+    ):
         self.device_address = device_address
         self.device_type = device_type or detect_device_type()
         self._managed_connection = False
+        # Wall-clock time for the feeder (it keeps local time, no time zone).
+        self.clock: Callable[[], datetime] = clock or datetime.now
 
         # Select UUIDs based on device type
         if self.device_type == "jk":
@@ -1044,7 +1051,7 @@ class FeederBLEProtocol:
         if not await self._ensure_connected():
             return
         if dt is None:
-            dt = datetime.now()
+            dt = self.clock()
         if self.device_type == "f14b":
             dow = dt.isoweekday() % 7  # Mon=1..Sat=6, Sun=0
             action_bytes = bytes([

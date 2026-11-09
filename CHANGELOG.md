@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.10.0] - 2026-11-09
+
+### Added
+
+- `FeederDevice(clock=...)` / `FeederBLEProtocol(clock=...)`: callable returning the current local
+  time, used whenever the feeder clock is set (`sync_time()` and the feeder's own time-sync
+  requests). Defaults to `datetime.now`. Home Assistant passes `homeassistant.util.dt.now`, so
+  the feeder follows HA's configured time zone even when the process runs in UTC.
+- `FeederDevice.last_error` (why the last connection attempt failed) and
+  `FeederDevice.verification_rejected` (the feeder rejected the verification code), so callers
+  such as a setup flow can tell a wrong code from an unreachable feeder.
+
 ## [0.9.0] - 2026-11-09
 
 ### Fixed

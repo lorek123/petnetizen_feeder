@@ -149,6 +149,7 @@ class FeederDevice:
         verification_code: str = DEFAULT_VERIFICATION_CODE,
         device_type: Optional[str] = None,
         connection_factory: Optional[ConnectionFactory] = None,
+        clock: Optional[Callable[[], datetime]] = None,
     ):
         """
         Initialize feeder device controller.
@@ -161,11 +162,16 @@ class FeederDevice:
                 When provided (e.g. from Home Assistant via ``establish_connection``),
                 reconnection uses this factory instead of creating a raw ``BleakClient``.
                 Standalone scripts can omit this to use the built-in connection logic.
+            clock: Optional callable returning the current local time, used whenever the
+                feeder clock is set (``sync_time()`` and the feeder's own time-sync
+                requests).  Defaults to ``datetime.now``; Home Assistant should pass
+                ``homeassistant.util.dt.now`` so the configured time zone is used even
+                when the process runs in UTC.
         """
         self.address = address
         self.verification_code = verification_code
         self._connection_factory = connection_factory
-        self._protocol = FeederBLEProtocol(address, device_type=device_type)
+        self._protocol = FeederBLEProtocol(address, device_type=device_type, clock=clock)
         if connection_factory is not None:
             self._protocol._managed_connection = True
         self._connected = False
@@ -797,7 +803,7 @@ class FeederDevice:
         Sync device clock to the given time (default: now).
 
         Args:
-            dt: Time to set on the device; defaults to datetime.now().
+            dt: Time to set on the device; defaults to the ``clock`` passed at init.
         """
         if not self._connected:
             raise RuntimeError("Not connected to device. Call connect() first.")
@@ -1114,6 +1120,16 @@ class FeederDevice:
             f"TC02 auto_mode_countdown={value}",
             self._protocol.set_tc02_dp(TC02_AUTO_COUNTDOWN, value),
         )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        """Why the most recent connection attempt failed, or None."""
+        return self._protocol.last_error
+
+    @property
+    def verification_rejected(self) -> bool:
+        """True if the feeder rejected the verification code on the last attempt."""
+        return self._protocol.last_error == _VERIFICATION_REJECTED
 
     @property
     def is_connected(self) -> bool:

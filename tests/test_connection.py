@@ -169,6 +169,8 @@ async def test_rejected_verification_fails_connect(caplog):
     assert not await feeder.connect()
     assert "verification code rejected" in caplog.text
     assert len(handed_out) == 1  # a rejected code is not retried
+    assert feeder.verification_rejected
+    assert feeder.last_error == "verification code rejected by feeder"
 
 
 async def test_early_drop_is_retried_within_connect(caplog):
@@ -433,3 +435,28 @@ async def test_led_and_auto_lock_come_from_pushed_state():
     assert await feeder.get_auto_lock_status() is True
     assert len(client.writes) == writes
     await feeder.disconnect()
+
+
+async def test_time_sync_uses_injected_clock():
+    from datetime import datetime
+
+    fixed = datetime(2026, 11, 9, 22, 40, 5)
+    client = FakeClient()
+    feeder, _ = make_feeder([client])
+    feeder._protocol.clock = lambda: fixed  # what FeederDevice(clock=...) sets
+    assert await feeder.connect()
+
+    # Feeder-initiated request (EB 05 ...) is answered with the injected time.
+    client._notify(frame(0x05, 26, 1, 1, 0, 0, 0))
+    await asyncio.sleep(1.2)  # send_sync_time paces itself for 1 s after writing
+    sync = [w for w in client.writes if w[1] == 0x05]
+    assert sync and sync[-1][3:9] == bytes([26, 11, 9, 22, 40, 5])
+    await feeder.disconnect()
+
+
+def test_clock_is_passed_to_protocol():
+    from datetime import datetime
+
+    clock = lambda: datetime(2026, 1, 1)  # noqa: E731
+    feeder = FeederDevice(ADDRESS, device_type="standard", clock=clock)
+    assert feeder._protocol.clock is clock
