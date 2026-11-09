@@ -194,12 +194,7 @@ async def main() -> int:
 
     # ── 7. Fault status ───────────────────────────────────────────────────────
     s = stage("Fault status (CMD 0x0A)")
-    before = len(proto.received_data)
-    await proto.query_fault()
-    resp = next(
-        (proto.decode_notification(d) for d in proto.received_data[before:] if len(d) >= 2 and f"{d[1]:02X}" == "0A"),
-        None,
-    )
+    resp = await proto.request(proto.query_fault, ["0A"], timeout=2.0)
     if resp:
         s.ok(f"fault_code={resp.get('fault_code')}")
     else:
@@ -207,12 +202,7 @@ async def main() -> int:
 
     # ── 8. Feeding status ─────────────────────────────────────────────────────
     s = stage("Feeding status (CMD 0x09)")
-    before = len(proto.received_data)
-    await proto.query_feeding_status()
-    resp = next(
-        (proto.decode_notification(d) for d in proto.received_data[before:] if len(d) >= 2 and f"{d[1]:02X}" == "09"),
-        None,
-    )
+    resp = await proto.request(proto.query_feeding_status, ["09"], timeout=2.0)
     if resp:
         s.ok(f"status={resp.get('feeding_status_text')}")
     else:
@@ -220,12 +210,7 @@ async def main() -> int:
 
     # ── 9. Child lock ─────────────────────────────────────────────────────────
     s = stage("Child lock (CMD 0x0D)")
-    before = len(proto.received_data)
-    await proto.query_child_lock()
-    resp = next(
-        (proto.decode_notification(d) for d in proto.received_data[before:] if len(d) >= 2 and f"{d[1]:02X}" == "0D"),
-        None,
-    )
+    resp = await proto.request(proto.query_child_lock, ["0D"], timeout=2.0)
     if resp:
         s.ok(f"child_lock={resp.get('child_lock_text')}")
     else:
@@ -233,12 +218,7 @@ async def main() -> int:
 
     # ── 10. Prompt sound ─────────────────────────────────────────────────────
     s = stage("Prompt sound (CMD 0x12)")
-    before = len(proto.received_data)
-    await proto.query_reminder_tone()
-    resp = next(
-        (proto.decode_notification(d) for d in proto.received_data[before:] if len(d) >= 2 and f"{d[1]:02X}" == "12"),
-        None,
-    )
+    resp = await proto.request(proto.query_reminder_tone, ["12"], timeout=2.0)
     if resp:
         s.ok(f"prompt_sound={resp.get('prompt_sound_text')}")
     else:

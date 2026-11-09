@@ -17,7 +17,6 @@ from .protocol import (
     CMD_SET_FEEDER_PLAN,
     CMD_CHILD_LOCK,
     CMD_REMINDER_TONE,
-    CMD_QUERY_FEEDER_PLAN,
     DEFAULT_VERIFICATION_CODE,
     CP01B_ROTATION_MODE,
     CP01B_PLAYBACK_FREQ,
@@ -42,12 +41,21 @@ _LOGGER = logging.getLogger(__name__)
 
 ConnectionFactory = Callable[[], Awaitable[Any]]
 
-# In one session (Du-W11B, fw 110, BlueZ) about half of fresh links were dropped
-# 2.2-3.3 s after link-up; a later session saw none in 20 attempts, so the
-# cause is unknown.  Session setup still waits this long (counted from link-up)
-# before reporting success, so a link that dies right away is retried at once
-# instead of being discovered at the next heartbeat or poll.
-LINK_SETTLE_S = 4.0
+# Session setup waits this long (counted from link-up) and checks the link is
+# still there before reporting success, so a link that dies right away is
+# retried at once.  One test session (Du-W11B, fw 110, BlueZ) saw about half of
+# fresh links dropped 2.2-3.3 s after link-up; later sessions saw none, so this
+# is kept short.  Later drops are caught by ensure_connected() on the next call.
+LINK_SETTLE_S = 1.0
+
+# State the feeder pushed or answered this recently, in the current session, is
+# served without a query.  Right after verification the feeder pushes feeding
+# status, fault, child lock, prompt sound, power source, LED and auto-lock.
+STATE_MAX_AGE_S = 30.0
+
+# A query the feeder left unanswered (e.g. do-not-disturb on firmware without
+# it) is not re-sent for this long within the same session; callers get None.
+UNANSWERED_RETRY_S = 600.0
 
 # Attempts per connect()/ensure_connected() call.
 CONNECT_ATTEMPTS = 3
@@ -165,6 +173,8 @@ class FeederDevice:
         self._heartbeat_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
         # Liveness probe; the feeder does not need it to keep an idle link.
         self._heartbeat_interval: int = 20
+        # Query codes -> when the feeder last left them unanswered.
+        self._unanswered: Dict[tuple, float] = {}
 
     async def connect(self, ble_client: Optional[Any] = None) -> bool:
         """
@@ -655,53 +665,20 @@ class FeederDevice:
         Raises:
             RuntimeError: If not connected
         """
-        if not self._connected:
-            raise RuntimeError("Not connected to device. Call connect() first.")
-
-        if not await self.ensure_connected():
-            raise RuntimeError("Connection lost. Please reconnect.")
-
         _LOGGER.debug("Querying schedule")
-        command = self._protocol.encode_command(CMD_QUERY_FEEDER_PLAN, length=0)
-
-        self._protocol.clear_notifications()
-        notification_count_before = len(self._protocol.received_data)
-
-        try:
-            await self._protocol.client.write_gatt_char(
-                self._protocol.write_uuid, command, response=False
-            )
-            await asyncio.sleep(4.0)
-
-            new_count = len(self._protocol.received_data) - notification_count_before
-            if new_count > 0:
-                new_notifications = self._protocol.received_data[
-                    notification_count_before:
-                ]
-                _LOGGER.debug(
-                    "query_schedule: got %d new notification(s)", len(new_notifications)
-                )
-                for data in new_notifications:
-                    decoded = self._protocol.decode_notification(data)
-                    cmd = decoded.get("command")
-                    if cmd == "11":
-                        slots = decoded.get("feed_plan_slots") or []
-                        if slots:
-                            _LOGGER.debug("Schedule received: %d slot(s)", len(slots))
-                            return slots
-                        if "data_hex" in decoded:
-                            _LOGGER.debug(
-                                "QUERY_FEEDER_PLAN response data_hex=%s len=%s",
-                                decoded.get("data_hex"),
-                                len(data) if hasattr(data, "__len__") else None,
-                            )
-                    elif cmd and "error" not in decoded:
-                        _LOGGER.debug("query_schedule saw notification cmd=%s", cmd)
-            else:
-                _LOGGER.warning("No response to schedule query within 4s")
+        decoded = await self._query_state(
+            self._protocol.query_feeder_plan,
+            "11",
+            timeout=4.0,
+            max_age=0,
+            skip_unanswered=False,
+        )
+        if decoded is None:
+            _LOGGER.warning("No response to schedule query within 4s")
             return []
-        except Exception as e:
-            raise RuntimeError(f"Failed to query schedule: {e}") from e
+        slots = decoded.get("feed_plan_slots") or []
+        _LOGGER.debug("Schedule received: %d slot(s)", len(slots))
+        return slots
 
     async def get_device_info(self) -> Dict:
         """
@@ -710,49 +687,70 @@ class FeederDevice:
         Returns:
             Dict with "device_name", "device_version" (or empty strings if not available).
         """
-        if not self._connected:
-            raise RuntimeError("Not connected to device. Call connect() first.")
-        if not await self.ensure_connected():
-            raise RuntimeError("Connection lost. Please reconnect.")
         _LOGGER.debug("Querying device info")
-        self._protocol.clear_notifications()
-        before = len(self._protocol.received_data)
-        await self._protocol.query_name_version()
-        await asyncio.sleep(2)
+        decoded = await self._query_state(
+            self._protocol.query_name_version,
+            "00",
+            timeout=2.0,
+            max_age=float("inf"),
+            skip_unanswered=False,
+        )
         result: Dict = {"device_name": "", "device_version": ""}
-        for data in self._protocol.received_data[before:]:
-            decoded = self._protocol.decode_notification(data)
-            if decoded.get("command") == "00":
-                result["device_name"] = decoded.get("device_name", "") or ""
-                result["device_version"] = decoded.get("device_version", "") or ""
-                _LOGGER.debug(
-                    "Device info: name=%s version=%s",
-                    result["device_name"],
-                    result["device_version"],
-                )
-                break
-        else:
+        if decoded is None:
             _LOGGER.warning("No device info response received within 2s")
+            return result
+        result["device_name"] = decoded.get("device_name", "") or ""
+        result["device_version"] = decoded.get("device_version", "") or ""
+        _LOGGER.debug(
+            "Device info: name=%s version=%s",
+            result["device_name"],
+            result["device_version"],
+        )
         return result
 
     async def _query_state(
-        self, query_func, command_code, timeout: float = 1.5
+        self,
+        query_func,
+        command_code,
+        timeout: float = 1.5,
+        max_age: float = STATE_MAX_AGE_S,
+        skip_unanswered: bool = True,
     ) -> Optional[Dict]:
-        """Send a query command and return the first matching decoded notification, or None."""
+        """Return state for ``command_code`` (str or tuple of codes), or None.
+
+        Serves a value seen in this session within ``max_age`` seconds from
+        cache; otherwise sends the query and returns as soon as the reply
+        arrives (or None after ``timeout``).  With ``skip_unanswered``, a query
+        that went unanswered earlier in this session returns None without
+        being re-sent for ``UNANSWERED_RETRY_S``.
+        """
         if not self._connected:
             raise RuntimeError("Not connected to device. Call connect() first.")
         if not await self.ensure_connected():
             raise RuntimeError("Connection lost. Please reconnect.")
-        self._protocol.clear_notifications()
-        before = len(self._protocol.received_data)
-        await query_func()
-        await asyncio.sleep(timeout)
-        codes = (command_code,) if isinstance(command_code, str) else command_code
-        for data in self._protocol.received_data[before:]:
-            decoded = self._protocol.decode_notification(data)
-            if decoded.get("command") in codes:
-                return decoded
-        return None
+        codes = (command_code,) if isinstance(command_code, str) else tuple(command_code)
+        protocol = self._protocol
+        now = time.monotonic()
+        session_start = protocol.connected_at or 0.0
+        for code in codes:
+            seen = protocol.last_seen.get(code)
+            if seen is not None and seen >= session_start and now - seen <= max_age:
+                return {**protocol.last_state, "command": code}
+        missed_at = self._unanswered.get(codes)
+        if (
+            skip_unanswered
+            and missed_at is not None
+            and missed_at >= session_start
+            and now - missed_at < UNANSWERED_RETRY_S
+        ):
+            return None
+        protocol.clear_notifications()
+        decoded = await protocol.request(query_func, codes, timeout)
+        if decoded is None:
+            self._unanswered[codes] = time.monotonic()
+        else:
+            self._unanswered.pop(codes, None)
+        return decoded
 
     async def _set_feature(self, log_msg: str, coro) -> bool:
         """Connection-guard wrapper for protocol set commands."""

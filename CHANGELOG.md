@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.7.0] - 2026-11-09
+
+Much faster connect and polling. Measured on a Du-W11B (fw 110) over BlueZ: connect plus one full
+status poll went from 28–33 s to 4–6 s, and later polls from ~22 s to 0.3–0.4 s.
+
+### Changed
+
+- **Queries return on reply.** State queries, `get_device_info()` and `query_schedule()` now wait
+  for the matching notification and return immediately, instead of sleeping for a fixed time
+  (previously 2.5–5.5 s each, counting the sleeps inside the protocol helpers). The old waits are
+  kept as timeouts.
+- **Pushed state is used.** Right after verification the feeder pushes feeding status, fault,
+  child lock, prompt sound, power source, LED and auto-lock. Every notification is now decoded into
+  `FeederBLEProtocol.last_state`, and a value seen in the current session within 30 s
+  (`STATE_MAX_AGE_S`) is returned without a query. Sending any command for a value (query or set)
+  invalidates its cached copy.
+- **Unanswered queries are skipped.** A query the feeder leaves unanswered (e.g. do-not-disturb on
+  firmware without it) returns `None` without being re-sent for 10 minutes in the same session
+  (`UNANSWERED_RETRY_S`). Schedule and device info are always queried.
+- Settle wait after link-up lowered from 4 s to 1 s (`LINK_SETTLE_S`).
+- The `query_*` helpers in `FeederBLEProtocol` no longer sleep after writing; use the new
+  `FeederBLEProtocol.request(send, codes, timeout)` to wait for the reply.
+
+### Added
+
+- `FeederBLEProtocol.query_feeder_plan()`, `request()`, `last_state` and `last_seen`.
+
+### Fixed
+
+- `get_tc02_state()` read `FeederBLEProtocol.last_state`, which did not exist; the error was
+  swallowed, so TC02 state never populated.
+
 ## [0.6.1] - 2026-11-09
 
 ### Changed

@@ -8,7 +8,8 @@ import asyncio
 import logging
 import time
 from datetime import datetime
-from typing import Optional, List, Tuple
+from collections.abc import Awaitable, Callable, Iterable
+from typing import Any, Optional, List, Tuple
 from bleak import BleakClient, BleakScanner
 from bleak.backends.characteristic import BleakGATTCharacteristic
 
@@ -35,6 +36,14 @@ HEARTBEAT_ACK_WINDOW_S = 5.0
 
 # How long send_verification_code() waits for the SET_FAMILY_ID reply.
 VERIFICATION_REPLY_TIMEOUT_S = 2.0
+
+# decode_notification() keys that describe the frame rather than device state.
+_FRAME_KEYS = frozenset(
+    {
+        "raw", "raw_bytes", "header", "command", "command_name", "footer",
+        "length", "crc", "data_hex", "data_bytes", "error",
+    }
+)
 
 # Command IDs
 CMD_QUERY_NAME_VERSION = "00"
@@ -197,6 +206,12 @@ class FeederBLEProtocol:
         self._verification_result: Optional[bool] = None
         self._verification_event = asyncio.Event()
 
+        # Device state decoded from every notification (pushed or requested),
+        # and when each command was last seen (time.monotonic()).
+        self.last_state: dict = {}
+        self.last_seen: dict = {}
+        self._waiters: list = []  # (frozenset of command codes, Future)
+
     def hex_string_to_bytes(self, hex_string: str) -> bytes:
         """Convert hex string to bytes"""
         return bytes.fromhex(hex_string.replace(" ", "").replace("-", ""))
@@ -213,6 +228,9 @@ class FeederBLEProtocol:
 
         Format: EA + Command + Length + Data + CRC(00) + AE
         """
+        # Whatever we send (query or set) makes the cached value for that
+        # command stale until the feeder answers.
+        self.last_seen.pop(command, None)
         if length is None:
             length = len(action_hex) // 2
 
@@ -476,7 +494,18 @@ class FeederBLEProtocol:
             len(data),
         )
         self.received_data.append(data)
-        self.last_notification_at = time.monotonic()
+        now = self.last_notification_at = time.monotonic()
+
+        decoded = self.decode_notification(data)
+        code = decoded.get("command")
+        if code and "error" not in decoded:
+            self.last_seen[code] = now
+            self.last_state.update(
+                {k: v for k, v in decoded.items() if k not in _FRAME_KEYS}
+            )
+            for codes, fut in self._waiters:
+                if code in codes and not fut.done():
+                    fut.set_result(decoded)
 
         if len(data) >= 2:
             cmd = f"{data[1]:02X}"
@@ -489,7 +518,6 @@ class FeederBLEProtocol:
 
             # Track last completed manual feed result inline so it's always current
             if cmd == "0C":
-                decoded = self.decode_notification(data)
                 if decoded.get("feed_records"):
                     self.last_feed_result = decoded["feed_records"][-1]
 
@@ -793,7 +821,6 @@ class FeederBLEProtocol:
         command = self.encode_command(CMD_DO_NOT_DISTURB_STATUS, length=0)
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
-            await asyncio.sleep(1.0)
         except Exception as exc:
             _LOGGER.warning("[%s] Failed to query DND: %s", self.device_address, exc)
 
@@ -912,6 +939,27 @@ class FeederBLEProtocol:
         )
         return self._verification_result
 
+    async def request(
+        self,
+        send: Callable[[], Awaitable[Any]],
+        codes: Iterable[str],
+        timeout: float,
+    ) -> Optional[dict]:
+        """Run ``send()`` and return the first decoded reply whose command is in ``codes``.
+
+        Returns as soon as the reply arrives, or None after ``timeout`` seconds.
+        """
+        fut = asyncio.get_running_loop().create_future()
+        entry = (frozenset(codes), fut)
+        self._waiters.append(entry)
+        try:
+            await send()
+            return await asyncio.wait_for(fut, timeout)
+        except TimeoutError:
+            return None
+        finally:
+            self._waiters.remove(entry)
+
     def handle_disconnect(self, client: BleakClient) -> None:
         """Bleak ``disconnected_callback``: log when and how the link died.
 
@@ -945,6 +993,20 @@ class FeederBLEProtocol:
             since_rx,
         )
 
+    async def query_feeder_plan(self):
+        """Query the feed schedule (response via notification, command 11)."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(CMD_QUERY_FEEDER_PLAN, length=0)
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to query feed plan: %s",
+                self.device_address,
+                exc,
+            )
+
     async def query_name_version(self):
         """Query device name and firmware version (response via notification, command 00)."""
         if not await self._ensure_connected():
@@ -952,7 +1014,6 @@ class FeederBLEProtocol:
         command = self.encode_command(CMD_QUERY_NAME_VERSION, length=0)
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
-            await asyncio.sleep(1.5)
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] Failed to query name/version: %s",
@@ -1009,7 +1070,6 @@ class FeederBLEProtocol:
         command = self.encode_command(CMD_FAULT, length=0)
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
-            await asyncio.sleep(1)
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] Failed to query fault status: %s",
@@ -1024,7 +1084,6 @@ class FeederBLEProtocol:
         command = self.encode_command(CMD_CHILD_LOCK, length=0)
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
-            await asyncio.sleep(1)
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] Failed to query child lock: %s",
@@ -1039,7 +1098,6 @@ class FeederBLEProtocol:
         command = self.encode_command(CMD_REMINDER_TONE, length=0)
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
-            await asyncio.sleep(1)
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] Failed to query reminder tone: %s",
@@ -1054,7 +1112,6 @@ class FeederBLEProtocol:
         command = self.encode_command(CMD_FEEDING_STATUS, length=0)
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
-            await asyncio.sleep(1)
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] Failed to query feeding status: %s",
@@ -1069,7 +1126,6 @@ class FeederBLEProtocol:
         command = self.encode_command(cmd_hex, length=0)
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
-            await asyncio.sleep(1.0)
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] CP01B query cmd=%s failed: %s", self.device_address, cmd_hex, exc
@@ -1096,7 +1152,6 @@ class FeederBLEProtocol:
         command = self.encode_command(cmd_hex, length=0)
         try:
             await self.client.write_gatt_char(self.write_uuid, command, response=False)
-            await asyncio.sleep(1.0)
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] TC02 query cmd=%s failed: %s", self.device_address, cmd_hex, exc

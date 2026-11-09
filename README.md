@@ -86,7 +86,7 @@ Main device controller. `device_type` is auto-detected from the BLE name when us
 
 | Method | Returns | Notes |
 |---|---|---|
-| `connect()` | `bool` | Up to 3 attempts; returns only once the link has stayed up for ~4 s |
+| `connect()` | `bool` | Up to 3 attempts; returns only once the link has stayed up for ~1 s |
 | `disconnect()` | — | |
 | `ensure_connected()` | `bool` | Reconnects if dropped (up to 3 attempts, one WARNING if all fail) |
 | `is_connected` | `bool` | Property |
@@ -95,9 +95,14 @@ Main device controller. `device_type` is auto-detected from the BLE name when us
 **Connection behaviour (Du-W11B, fw 110):** session setup enables notifications, then
 sends the verification code (same order as the Android app, so the `EB 06 01 01` verdict
 is visible). The feeder drops links that never send the code within ~4–5 s; an
-authenticated link stays up for minutes even when idle. Setup waits until ~4 s after
-link-up before reporting success and retries if the link died, because one test session
-saw about half of fresh links dropped 2–3 s after link-up (not reproduced since).
+authenticated link stays up for minutes even when idle. Setup waits until ~1 s after
+link-up before reporting success and retries if the link died; one test session saw about
+half of fresh links dropped 2–3 s after link-up (not reproduced since).
+
+**Polling:** queries return as soon as the feeder replies. State the feeder pushes after
+verification (feeding status, fault, child lock, prompt sound, power, LED, auto-lock) is
+served from `FeederBLEProtocol.last_state` for 30 s without a query, and a query the
+firmware never answers is not re-sent for 10 minutes.
 
 Tested through an ESPHome Bluetooth proxy running ESPHome 2026.10.0. Before that update,
 the same proxy failed every connection while enabling notifications (error 19).

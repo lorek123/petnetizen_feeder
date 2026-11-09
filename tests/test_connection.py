@@ -35,10 +35,22 @@ class _Services:
 class FakeClient:
     """Mimics the feeder: answers verification and heartbeats, may drop early."""
 
-    def __init__(self, *, drop_after=None, verify_reply=0x01, answer_heartbeat=True):
+    def __init__(
+        self,
+        *,
+        drop_after=None,
+        verify_reply=0x01,
+        answer_heartbeat=True,
+        push_after_verify=(),
+        replies=None,
+    ):
         self.drop_after = drop_after
         self.verify_reply = verify_reply
         self.answer_heartbeat = answer_heartbeat
+        # Frames the feeder pushes unprompted after a successful verification.
+        self.push_after_verify = list(push_after_verify)
+        # Query replies: command byte -> reply frame.
+        self.replies = dict(replies or {})
         self.disconnected_callback = None
         self.connected = True
         self.services = _Services()
@@ -82,6 +94,10 @@ class FakeClient:
             if self.verify_reply is not None:
                 reply = bytes([0xEB, 0x06, 0x01, self.verify_reply, 0x00, 0xAE])
                 asyncio.get_running_loop().call_soon(self._notify, reply)
+                for frame in self.push_after_verify:
+                    asyncio.get_running_loop().call_soon(self._notify, frame)
+        elif cmd in self.replies:
+            asyncio.get_running_loop().call_soon(self._notify, self.replies[cmd])
         elif cmd == 0x03 and self.answer_heartbeat:
             asyncio.get_running_loop().call_soon(
                 self._notify, bytes([0xEB, 0x03, 0x00, 0x00, 0xAE])
@@ -234,4 +250,108 @@ async def test_device_initiated_heartbeat_is_echoed():
     await asyncio.sleep(0.05)
     heartbeats = [w for w in client.writes if w[1] == 0x03]
     assert len(heartbeats) == 1
+    await feeder.disconnect()
+
+
+def frame(cmd, *data):
+    """Feeder notification frame: EB cmd len data.. 00 AE."""
+    return bytes([0xEB, cmd, len(data), *data, 0x00, 0xAE])
+
+
+# What a Du-W11B pushes right after verification (captured 2026-10-25).
+PUSHED_STATE = [
+    frame(0x0E, 0x01),  # power: DC
+    frame(0x09, 0x00),  # feeding status: idle
+    frame(0x0A, 0x00),  # fault: none
+    frame(0x0D, 0x01),  # child lock: on
+    frame(0x0F, 0x01),  # LED on
+    frame(0x10, 0x01),  # auto-lock on
+    frame(0x12, 0x00),  # prompt sound off
+]
+
+
+async def test_pushed_state_is_served_without_queries():
+    client = FakeClient(push_after_verify=PUSHED_STATE)
+    feeder, _ = make_feeder([client])
+    assert await feeder.connect()
+    feeder._cancel_heartbeat()
+    writes_after_connect = len(client.writes)
+
+    assert await feeder.get_child_lock_status() is True
+    assert await feeder.get_prompt_sound_status() is False
+    assert await feeder.get_fault_status() == 0
+    assert await feeder.get_feeding_status() == "idle"
+
+    assert len(client.writes) == writes_after_connect  # nothing was queried
+    await feeder.disconnect()
+
+
+async def test_query_returns_as_soon_as_reply_arrives():
+    client = FakeClient(replies={0x0D: frame(0x0D, 0x00)})
+    feeder, _ = make_feeder([client])
+    assert await feeder.connect()
+
+    t = asyncio.get_running_loop().time()
+    assert await feeder.get_child_lock_status() is False
+    assert asyncio.get_running_loop().time() - t < 0.5  # not the 1.5 s timeout
+    await feeder.disconnect()
+
+
+async def test_setting_a_value_invalidates_its_cached_state():
+    client = FakeClient(
+        push_after_verify=PUSHED_STATE, replies={0x0D: frame(0x0D, 0x00)}
+    )
+    feeder, _ = make_feeder([client])
+    assert await feeder.connect()
+    assert await feeder.get_child_lock_status() is True  # pushed value
+
+    await feeder.set_child_lock(False)
+    # The set write made the pushed value stale, so this queries the feeder.
+    assert await feeder.get_child_lock_status() is False
+    await feeder.disconnect()
+
+
+async def test_schedule_and_device_info_return_on_reply():
+    schedule = frame(0x11, 0x7F, 8, 0, 2, 1)  # every day 08:00, 2 portions
+    info = frame(0x00, *b"Du-W11B\0\0\0\0\0", *b"110")
+    client = FakeClient(replies={0x11: schedule, 0x00: info})
+    feeder, _ = make_feeder([client])
+    assert await feeder.connect()
+
+    t = asyncio.get_running_loop().time()
+    slots = await feeder.query_schedule()
+    details = await feeder.get_device_info()
+    assert asyncio.get_running_loop().time() - t < 0.5  # not 4 s + 2 s
+
+    assert slots == [
+        {"weekdays": ["sun", "mon", "tue", "wed", "thu", "fri", "sat"],
+         "time": "08:00", "portions": 2, "enabled": True}
+    ]
+    assert details == {"device_name": "Du-W11B", "device_version": "110"}
+    await feeder.disconnect()
+
+
+async def test_cached_state_is_not_reused_across_sessions():
+    first = FakeClient(push_after_verify=PUSHED_STATE)
+    second = FakeClient(replies={0x0D: frame(0x0D, 0x00)})
+    feeder, _ = make_feeder([first, second])
+    assert await feeder.connect()
+    assert await feeder.get_child_lock_status() is True
+
+    first.drop()
+    assert await feeder.get_child_lock_status() is False  # reconnected, re-queried
+    await feeder.disconnect()
+
+
+async def test_unanswered_query_is_not_resent_in_the_same_session():
+    client = FakeClient()  # never answers do-not-disturb (0x17)
+    feeder, _ = make_feeder([client])
+    assert await feeder.connect()
+
+    assert await feeder.get_do_not_disturb() is None  # waits out the timeout once
+    queries = [w for w in client.writes if w[1] == 0x17]
+    t = asyncio.get_running_loop().time()
+    assert await feeder.get_do_not_disturb() is None
+    assert asyncio.get_running_loop().time() - t < 0.1
+    assert [w for w in client.writes if w[1] == 0x17] == queries  # not re-sent
     await feeder.disconnect()
