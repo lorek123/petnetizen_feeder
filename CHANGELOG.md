@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [0.9.0] - 2026-11-09
+
+### Fixed
+
+- **Last feed result was the oldest record.** Feed reports list records newest first, but the
+  last list entry was taken, so e.g. a March feed showed in November. `get_last_feed_result()`
+  now returns the newest record across manual (0C) and scheduled (0B) reports; previously
+  scheduled feeds were ignored.
+- **Feed records were mis-decoded.** Per the app's `FeederResultBean` the 9 bytes are date/time,
+  portions dispensed, portions requested and fault bits. Records now carry `portions` (dispensed),
+  `requested`, `fault_code`, `feed_type` ("Manual" for 0C, "Plan" for 0B) and `status`
+  ("Success" when nothing failed and all requested portions were dispensed, else "Failed").
+- **Feeding status 2 means "done", not "error".** Codes now follow the app's `FeederStatus`:
+  0 idle, 1 feeding, 2 done, 3 failed.
+
+### Added
+
+- `get_led_status()`, `get_auto_lock_status()`, `get_atmosphere_light_status()`,
+  `get_long_ring_status()` (served from pushed state when fresh) and
+  `FeederBLEProtocol.query_command()`.
+
 ## [0.8.0] - 2026-11-09
 
 ### Added

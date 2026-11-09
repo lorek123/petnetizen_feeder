@@ -347,7 +347,8 @@ class FeederBLEProtocol:
                         "Battery" if data_section[0] == 0 else "DC Power"
                     )
                 elif command_hex == "09" and len(data_section) >= 1:
-                    status_map = {0: "Idle", 1: "Feeding", 2: "Error"}
+                    # Same codes as the app's FeederStatus enum.
+                    status_map = {0: "Idle", 1: "Feeding", 2: "Done", 3: "Failed"}
                     result["feeding_status"] = data_section[0]
                     result["feeding_status_text"] = status_map.get(
                         data_section[0], f"Unknown({data_section[0]})"
@@ -383,31 +384,28 @@ class FeederBLEProtocol:
                         if data_section[0] == 1
                         else f"Status({data_section[0]})"
                     )
-                elif command_hex == "0C" and len(data_section) >= 9:
-                    # Parse feed records (9 bytes each)
+                elif command_hex in ("0B", "0C") and len(data_section) >= 9:
+                    # Feed records, 9 bytes each, newest first (app FeederResultBean):
+                    # YY MM DD hh mm ss, portions dispensed, portions requested, fault bits.
+                    # 0B = scheduled feeds, 0C = manual feeds.
+                    feed_type = "Plan" if command_hex == "0B" else "Manual"
                     feed_records = []
-                    num_records = len(data_section) // 9
-                    for i in range(num_records):
-                        offset = i * 9
-                        if offset + 9 <= len(data_section):
-                            record = data_section[offset : offset + 9]
-                            timestamp = f"20{record[0]:02d}-{record[1]:02d}-{record[2]:02d} {record[3]:02d}:{record[4]:02d}:{record[5]:02d}"
-                            feed_records.append(
-                                {
-                                    "timestamp": timestamp,
-                                    "portions": record[6],
-                                    "feed_type": "Manual"
-                                    if record[7] == 1
-                                    else "Plan"
-                                    if record[7] == 2
-                                    else f"Unknown({record[7]})",
-                                    "status": "Success"
-                                    if record[8] == 0
-                                    else "Failed"
-                                    if record[8] == 1
-                                    else f"Unknown({record[8]})",
-                                }
-                            )
+                    for offset in range(0, len(data_section) - 8, 9):
+                        record = data_section[offset : offset + 9]
+                        timestamp = f"20{record[0]:02d}-{record[1]:02d}-{record[2]:02d} {record[3]:02d}:{record[4]:02d}:{record[5]:02d}"
+                        dispensed, requested, fault = record[6], record[7], record[8]
+                        feed_records.append(
+                            {
+                                "timestamp": timestamp,
+                                "portions": dispensed,
+                                "requested": requested,
+                                "feed_type": feed_type,
+                                "status": "Success"
+                                if fault == 0 and dispensed >= requested
+                                else "Failed",
+                                "fault_code": fault,
+                            }
+                        )
                     if feed_records:
                         result["feed_records"] = feed_records
                 elif command_hex == "06" and len(data_section) >= 1:
@@ -529,10 +527,12 @@ class FeederBLEProtocol:
                 self._verification_result = data[3] == 1
                 self._verification_event.set()
 
-            # Track last completed manual feed result inline so it's always current
-            if cmd == "0C":
-                if decoded.get("feed_records"):
-                    self.last_feed_result = decoded["feed_records"][-1]
+            # Track the newest feed (manual 0C or scheduled 0B) across all reports.
+            if cmd in ("0B", "0C") and decoded.get("feed_records"):
+                newest = max(decoded["feed_records"], key=lambda r: r["timestamp"])
+                current = self.last_feed_result
+                if current is None or newest["timestamp"] >= current["timestamp"]:
+                    self.last_feed_result = newest
 
             # The feeder firmware pushes CMD_SYNC_TIME ("05") as a device-initiated
             # request for the current time.  The Android app responds immediately via
@@ -1090,6 +1090,21 @@ class FeederBLEProtocol:
                 exc,
             )
 
+
+    async def query_command(self, cmd_hex: str):
+        """Send a length-0 query for ``cmd_hex``; the reply arrives as a notification."""
+        if not await self._ensure_connected():
+            return
+        command = self.encode_command(cmd_hex, length=0)
+        try:
+            await self.client.write_gatt_char(self.write_uuid, command, response=False)
+        except Exception as exc:
+            _LOGGER.warning(
+                "[%s] Failed to query %s: %s",
+                self.device_address,
+                cmd_hex,
+                exc,
+            )
 
     async def query_power_mode(self):
         """Query power source (response via notification, command 0E)"""

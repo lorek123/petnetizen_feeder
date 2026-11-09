@@ -365,3 +365,71 @@ async def test_power_mode_is_served_from_pushed_state():
     assert await feeder.get_power_mode() == "DC Power"
     assert len(client.writes) == writes
     await feeder.disconnect()
+
+
+# Real feed-record dumps from a Du-W11B (2026-10-25), newest record first.
+MANUAL_DUMP = bytes.fromhex(
+    "EB0C5A1A0A17110F230101001A0A151537170101001A0A1515371A0101001A050201261101"
+    "01001A0502090E250101001A0502090E270101001A040A160A070101001A040A160A0E0101"
+    "001A031909122B01010000AE"
+)
+PLAN_DUMP = bytes.fromhex(
+    "EB0BB41A0A19090F020101001A0A04110F010101001A0A04150F050303001A0A05090F0201"
+    "01001A0A050D0F030202001A0A05110F010101001A0A05150F050303001A0A06090F010101"
+    "001A0A060D0F030202001A0A06110F010101001A0A06150F050303001A0717110F02010100"
+    "1A0717150F050303001A0718090F020101001A07180D0F030202001A0718110F020101001A"
+    "0718150F050303001A0719090F010101001A07190D0F030202001A0719110F0201010000AE"
+)
+
+
+async def test_last_feed_is_newest_record_across_manual_and_plan_reports():
+    client = FakeClient(push_after_verify=[MANUAL_DUMP, PLAN_DUMP])
+    feeder, _ = make_feeder([client])
+    assert await feeder.connect()
+
+    last = feeder.get_last_feed_result()
+    # Not the oldest manual record (2026-03-25), but the newest of both lists.
+    assert last == {
+        "timestamp": "2026-10-25 09:15:02",
+        "portions": 1,
+        "requested": 1,
+        "feed_type": "Plan",
+        "status": "Success",
+        "fault_code": 0,
+    }
+
+    # A later manual feed report replaces it; an older one does not.
+    client._notify(frame(0x0C, 26, 10, 25, 22, 25, 42, 1, 1, 0))
+    assert feeder.get_last_feed_result()["timestamp"] == "2026-10-25 22:25:42"
+    client._notify(frame(0x0C, 26, 1, 1, 0, 0, 0, 1, 1, 0))
+    assert feeder.get_last_feed_result()["timestamp"] == "2026-10-25 22:25:42"
+    await feeder.disconnect()
+
+
+async def test_record_portions_and_failure_follow_the_app_layout():
+    feeder, _ = make_feeder([])
+    decoded = feeder._protocol.decode_notification(
+        frame(0x0B, 26, 10, 4, 21, 15, 5, 2, 3, 0x04)  # 2 of 3 dispensed, out of food
+    )
+    record = decoded["feed_records"][0]
+    assert (record["portions"], record["requested"], record["status"]) == (2, 3, "Failed")
+    assert record["fault_code"] == 0x04
+
+
+async def test_feeding_status_codes_match_the_app():
+    client = FakeClient(replies={0x09: frame(0x09, 0x02)})
+    feeder, _ = make_feeder([client])
+    assert await feeder.connect()
+    assert await feeder.get_feeding_status() == "done"  # was misreported as "error"
+    await feeder.disconnect()
+
+
+async def test_led_and_auto_lock_come_from_pushed_state():
+    client = FakeClient(push_after_verify=PUSHED_STATE)
+    feeder, _ = make_feeder([client])
+    assert await feeder.connect()
+    writes = len(client.writes)
+    assert await feeder.get_led_status() is True
+    assert await feeder.get_auto_lock_status() is True
+    assert len(client.writes) == writes
+    await feeder.disconnect()

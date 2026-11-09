@@ -126,7 +126,7 @@ the same proxy failed every connection while enabling notifications (error 19).
 | `get_child_lock_status()` | `bool \| None` | |
 | `get_prompt_sound_status()` | `bool \| None` | |
 | `get_fault_status()` | `int \| None` | 0 = ok |
-| `get_feeding_status()` | `str \| None` | |
+| `get_feeding_status()` | `str \| None` | `idle`, `feeding`, `done`, `failed` |
 | `get_do_not_disturb()` | `dict \| None` | `{enabled, start_time, end_time}` |
 | `get_last_feed_result()` | `dict \| None` | Cached from last notification |
 

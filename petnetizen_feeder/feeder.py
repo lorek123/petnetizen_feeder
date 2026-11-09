@@ -822,7 +822,7 @@ class FeederDevice:
         return decoded["power_mode"]
 
     async def get_feeding_status(self) -> Optional[str]:
-        """Query current feeding status. Returns 'idle', 'feeding', 'error', or None."""
+        """Query current feeding status. Returns 'idle', 'feeding', 'done', 'failed', or None."""
         decoded = await self._query_state(self._protocol.query_feeding_status, "09")
         if decoded is None or "feeding_status_text" not in decoded:
             _LOGGER.debug("No feeding status response received within 1.5s")
@@ -830,6 +830,31 @@ class FeederDevice:
         status = decoded["feeding_status_text"].lower()
         _LOGGER.debug("Feeding status: %s", status)
         return status
+
+    async def _get_switch_state(self, cmd_hex: str, key: str) -> Optional[bool]:
+        """Read an on/off setting (pushed after connecting, else queried)."""
+        decoded = await self._query_state(
+            lambda: self._protocol.query_command(cmd_hex), cmd_hex
+        )
+        if decoded is None or key not in decoded:
+            return None
+        return bool(decoded[key])
+
+    async def get_led_status(self) -> Optional[bool]:
+        """LED indicator on/off, or None if unknown."""
+        return await self._get_switch_state("0F", "led")
+
+    async def get_auto_lock_status(self) -> Optional[bool]:
+        """Auto-lock on/off, or None if unknown."""
+        return await self._get_switch_state("10", "auto_lock")
+
+    async def get_atmosphere_light_status(self) -> Optional[bool]:
+        """Atmosphere light on/off, or None if unknown."""
+        return await self._get_switch_state("13", "atmosphere_light")
+
+    async def get_long_ring_status(self) -> Optional[bool]:
+        """Long ring on/off, or None if unknown."""
+        return await self._get_switch_state("19", "long_ring")
 
     async def set_led(self, enabled: bool) -> bool:
         """Set LED indicator on/off."""
